@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% from "macros.html" import status, split %}
+{% block title %}Frames: Kitman{% endblock %}
+{% block body %}
+<h1>Frames</h1>
+<p class="lede">Every sampled frame, where it came from and how far it has got. {{ total }} match these filters{% if total > frames|length %}; showing the first {{ frames|length }}{% endif %}.</p>
+
+<form class="panel filters row" method="get">
+  <label>Match<select name="match"><option value="">Any</option>{% for m in matches %}<option value="{{ m.id }}" {{ 'selected' if args.match == m.id }}>{{ m.id }} ({{ m.split }})</option>{% endfor %}</select></label>
+  <label>Split<select name="split"><option value="">Any</option>{% for s in ['train','val','test'] %}<option {{ 'selected' if args.split == s }}>{{ s }}</option>{% endfor %}</select></label>
+  <label>Sampling<select name="mode"><option value="">Any</option><option value="custom" {{ 'selected' if args.mode == 'custom' }}>Custom plan</option><option value="fixed" {{ 'selected' if args.mode == 'fixed' }}>Fixed interval</option></select></label>
+  <label>Bucket<select name="bucket"><option value="">Any</option>{% for b in ['random','fast_pan','ball_missed','edge','replay','menu','clip','fixed'] %}<option {{ 'selected' if args.bucket == b }}>{{ b }}</option>{% endfor %}</select></label>
+  <label>Status<select name="status"><option value="">Any</option>{% for s in ['sampled','in batch','pre-labelled','corrected'] %}<option {{ 'selected' if args.status == s }}>{{ s }}</option>{% endfor %}</select></label>
+  <label>Batch<select name="batch"><option value="">Any</option>{% for b in batches %}<option value="{{ b.id }}" {{ 'selected' if args.batch == b.id|string }}>{{ b.name }}</option>{% endfor %}</select></label>
+  <button>Filter</button>
+</form>
+
+<div data-live="frames">
+{% if frames %}
+<div class="grid">
+{% for f in frames %}
+  <a class="tile" href="{{ url_for('frame', fid=f.id) }}">
+    <img loading="lazy" src="{{ url_for('thumb', p=f.path) }}" alt="{{ f.name }}">
+    <div><span><b class="num">{{ f.match_id }}</b> <span class="num">{{ f.t|mmss }}</span></span><span class="muted">{{ f.bucket }}</span>{{ status(f.status) }}</div>
+  </a>
+{% endfor %}
+</div>
+{% else %}
+<p class="empty">No frames match. Sample some from the <a href="{{ url_for('overview') }}">squad sheet</a>, or clear the filters.</p>
+{% endif %}
+</div>
+{% endblock %}

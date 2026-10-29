@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% from "macros.html" import timeline, legend, split, status %}
+{% block title %}{{ m.id }}: Kitman{% endblock %}
+{% block body %}
+<h1>{{ m.id }} {{ split(m.split) }}</h1>
+<div data-live="match">
+<p class="lede">{{ m.file }}.{% if m.description %} {{ m.description }}{% endif %}</p>
+{% if m.message %}<p class="small warn-text">{{ m.message }}</p>{% endif %}
+{% if m.status != 'ready' %}
+<p class="empty">{{ m.id }} is {{ {'queued':'waiting to be prepared','copying':'being stored in Kitman','analysing':'being analysed for live play','failed':'not ready: preparing failed'}[m.status] }}.
+  {% if m.has_pts %}Fixed interval sampling works already; the custom plan unlocks when the analysis finishes.{% endif %}
+  Progress is on the <a href="{{ url_for('videos') }}">Videos</a> page.</p>
+{% endif %}
+<ul class="facts">
+  <li><span class="num">{{ '%.1f'|format(m.duration_s / 60) if m.duration_s else '–' }}</span><span>minutes recorded</span></li>
+  <li><span class="num">{{ '%.1f'|format(m.live_s / 60) if m.status == 'ready' else '–' }}</span><span>minutes of live play</span></li>
+  <li><span class="num">{{ m.avg_fps or '–' }}</span><span>average fps (variable)</span></li>
+  <li><span class="num">{{ m.n_frames }}</span><span>frames sampled</span></li>
+  <li><span class="num">{{ m.n_corrected }}</span><span>corrected</span></li>
+</ul>
+{% if m.status == 'ready' %}
+{{ timeline(m, big=true) }}
+{{ legend() }}
+<details><summary class="small">Contact sheet (12 frames across the video)</summary>
+  <img src="{{ url_for('video_sheet', mid=m.id) }}" alt="Twelve frames from {{ m.id }}" style="max-width:100%;margin-top:.5rem;border-radius:var(--r-md)">
+</details>
+{% endif %}
+
+<p><a class="btn primary" href="{{ url_for('sampling_page', match=m.id) }}">Sample this match</a></p>
+
+<h2>Sampling runs</h2>
+{% if runs %}
+<table>
+  <thead><tr><th>Run</th><th>Mode</th><th>Settings</th><th>Status</th><th class="r">Frames</th><th>Started</th></tr></thead>
+  <tbody>
+  {% for r in runs %}{% set p = r.params|fromjson %}
+    <tr><td class="num">{{ r.id }}</td><td>{{ 'Custom plan' if r.mode == 'custom' else 'Fixed interval' }}</td>
+      <td class="small">{% if r.mode == 'fixed' %}every {{ p.interval_s }} s{% else %}seed {{ p.seed }}{% endif %}</td>
+      <td>{{ status(r.status) }}</td><td class="r num">{{ r.n_frames }}</td><td class="small muted">{{ r.created|replace('T', ' ') }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}<p class="empty">No frames sampled from {{ m.id }} yet. Pick a mode above.</p>{% endif %}
+
+{% if frames %}
+<h2>Frames <span class="muted small">{{ frames|length }}</span></h2>
+<div class="grid">
+{% for f in frames[:120] %}
+  <a class="tile" href="{{ url_for('frame', fid=f.id) }}">
+    <img loading="lazy" src="{{ url_for('thumb', p=f.path) }}" alt="{{ f.name }} at {{ f.t|mmss }}">
+    <div><span class="num">{{ f.t|mmss }}</span><span class="muted">{{ f.bucket }}</span>{{ status(f.status) }}</div>
+  </a>
+{% endfor %}
+</div>
+{% if frames|length > 120 %}<p><a href="{{ url_for('frames', match=m.id) }}">See all {{ frames|length }} frames from {{ m.id }}</a></p>{% endif %}
+{% endif %}
+</div>
+{% endblock %}

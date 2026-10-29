@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% from "macros.html" import status %}
+{% block title %}Activity: Kitman{% endblock %}
+{% block body %}
+<h1>Activity</h1>
+<p class="lede">Background work: sampling, pre-labelling, Roboflow transfers and test evaluations, newest first. Jobs run one at a time.</p>
+<div data-live="jobs">
+{% if jobs %}
+<table>
+  <thead><tr><th>Job</th><th>Status</th><th>Result</th><th>Started</th></tr></thead>
+  <tbody>
+  {% for j in jobs %}
+    <tr><td>{{ j.title }}{% if j.log %}<details><summary class="small muted">Log</summary><pre class="log">{{ j.log }}</pre></details>{% endif %}</td>
+      <td>{{ status(j.status) }}{% if j.status == 'running' %} <span class="num">{{ (j.progress * 100)|round|int }}%</span>{% endif %}</td>
+      <td class="small">{{ j.message or '' }}</td><td class="small muted">{{ j.created|replace('T', ' ') }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}<p class="empty">Nothing has run yet.</p>{% endif %}
+</div>
+{% endblock %}

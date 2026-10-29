@@ -1,0 +1,66 @@
+{# Match timeline: live / replay / other / black bands over the whole video, one tick per sampled frame. #}
+{% macro timeline(m, big=false) -%}
+{% set d = m.duration_s or 1 %}
+<svg class="timeline{{ ' big' if big }}" viewBox="0 0 1000 {{ 54 if big else 26 }}" preserveAspectRatio="none" role="img"
+     aria-label="{{ m.id }} timeline: {{ (m.live_s / 60)|round(1) }} live minutes of {{ (d / 60)|round(1) }}, {{ m.ticks|length }} frames sampled">
+  {% set h = 54 if big else 26 %}
+  {% set band = 30 if big else 14 %}
+  {% for s, e, st in m.segments %}
+    <rect x="{{ (s / d * 1000)|round(2) }}" y="{{ h - band }}" width="{{ ((e - s) / d * 1000)|round(2) }}" height="{{ band }}"
+          fill="var(--{{ {'live':'pitch','replay_or_cutscene':'replay','black':'black-state'}.get(st, 'other') }})"/>
+  {% endfor %}
+  {% for t in m.ticks %}
+    <rect x="{{ (t.t / d * 1000)|round(2) }}" y="0" width="{{ 2.4 if big else 1.6 }}" height="{{ h - band - 1 }}"
+          fill="var(--{{ {'corrected':'ok','pre-labelled':'warn','in batch':'ink','sampled':'replay'}[t.status] }})"
+          {% if t.bucket == 'clip' %}opacity="0.35"{% endif %}/>
+  {% endfor %}
+</svg>
+{%- endmacro %}
+
+{% macro legend() -%}
+<ul class="legend">
+  <li><i style="background:var(--pitch)"></i>Live play</li>
+  <li><i style="background:var(--replay)"></i>Replay or cutscene</li>
+  <li><i style="background:var(--other)"></i>Menus, overlays</li>
+  <li><i style="background:var(--black-state)"></i>Black</li>
+  <li><i class="tick" style="background:var(--replay)"></i>Sampled</li>
+  <li><i class="tick" style="background:var(--ink)"></i>In a batch</li>
+  <li><i class="tick" style="background:var(--warn)"></i>Pre-labelled</li>
+  <li><i class="tick" style="background:var(--ok)"></i>Corrected</li>
+</ul>
+{%- endmacro %}
+
+{% macro status(s) -%}<span class="status {{ s|replace(' ', '-') }}">{{ s }}</span>{%- endmacro %}
+{% macro split(s) -%}<span class="split {{ s }}">{{ s }}</span>{%- endmacro %}
+
+{# Matches picker shared by Sampling and Batches: a group (all / a split) or one video. #}
+{% macro scope_select(matches, pick='all', id='scope') -%}
+<label>Matches<select name="scope" id="{{ id }}">
+  <optgroup label="Groups">
+    <option value="all" {{ 'selected' if pick == 'all' }}>All ({{ matches|length }})</option>
+    {% for s in ['train','val','test'] %}<option value="{{ s }}" {{ 'selected' if pick == s }}>{{ s|capitalize }} ({{ matches|selectattr('split','equalto',s)|list|length }})</option>{% endfor %}
+  </optgroup>
+  <optgroup label="Single video">
+    {% for m in matches %}<option value="{{ m.id }}" {{ 'selected' if pick == m.id }}>{{ m.id }} ({{ m.split }}){{ '' if m.status == 'ready' else ', not ready' }}</option>{% endfor %}
+  </optgroup>
+</select></label>
+{%- endmacro %}
+
+{# Several videos at once: a dropdown that opens into a checklist grouped by split. #}
+{% macro video_picker(matches) -%}
+<div class="picker-field"><span class="picker-label">Videos</span>
+<details class="picker">
+  <summary data-empty="Choose videos">Choose videos</summary>
+  <div class="picker-menu">
+    {% for s in ['train','val','test'] %}{% set group = matches|selectattr('split','equalto',s)|list %}
+    {% if group %}
+    <fieldset>
+      <legend><label class="inline"><input type="checkbox" class="picker-all" data-split="{{ s }}">All {{ s }} ({{ group|length }})</label></legend>
+      {% for m in group %}<label class="inline"><input type="checkbox" name="match" value="{{ m.id }}" data-split="{{ s }}">{{ m.id }}</label>{% endfor %}
+    </fieldset>
+    {% endif %}{% endfor %}
+  </div>
+</details></div>
+{%- endmacro %}
+
+{% macro pct(v) -%}{{ '%.1f'|format(v * 100) if v is not none else '–' }}{%- endmacro %}

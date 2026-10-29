@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% from "macros.html" import status, pct %}
+{% block title %}Training: Kitman{% endblock %}
+{% block body %}
+<h1>Training</h1>
+<p class="lede">Each run trains on corrected labels. Frames go to train, val or test by the split of the video they came from, never by percentage. Val picks the model; test is for the final number only.</p>
+
+<form class="panel" method="post" action="{{ url_for('training_new') }}">
+  <h3 style="margin-top:0">New run</h3>
+  <fieldset>
+    <legend class="small" style="font-weight:700;margin-bottom:.4rem">Batches and labels to train on</legend>
+    {% for bid, b in batches.items() %}{% set chosen = b.sets|selectattr('id', 'in', pre.sets)|list %}
+    <div class="batch-pick">
+      <label class="inline"><input type="checkbox" name="batch_id" value="{{ bid }}" {{ 'checked' if chosen }}>{{ b.name }} <span class="muted">(round {{ b.round }})</span></label>
+      <select name="labels_{{ bid }}" aria-label="Labels for {{ b.name }}">
+        {% for s in b.sets %}<option value="{{ s.id }}" {{ 'selected' if s in chosen }}>{{ 'Corrected' if s.kind == 'corrected' else 'Pre-labels' }}: {{ s.source }}, {{ s.n }} frames</option>{% endfor %}
+      </select>
+    </div>
+    {% else %}<p class="muted small">No labelled batches yet. Pre-label a batch, or bring one back from Roboflow.</p>{% endfor %}
+    <p class="hint" style="margin:.4rem 0 0">Frames go to train, val or test by their video's split. With no val frames, the run validates on its train frames.</p>
+  </fieldset>
+  {% if src %}<p class="small" style="margin:.75rem 0 0">Settings copied from <a href="{{ url_for('training_run', rid=src.id) }}">run {{ src.id }}: {{ src.name }}</a>. <a href="{{ url_for('training_list') }}">Start from defaults instead</a></p>{% endif %}
+  <div class="row" style="margin-top:1rem">
+    <label>Name<input name="name" value="{{ pre.name }}" placeholder="Round 1, YOLO11s 1280" size="24"></label>
+    <label>YOLO version<select name="version">{% for v in versions %}<option value="{{ v }}" {{ 'selected' if v == pre.version }}>{{ 'YOLOv8' if v == 'v8' else 'YOLO' ~ v }}</option>{% endfor %}</select></label>
+    <label>Size<select name="size">{% for s, label in sizes.items() %}<option value="{{ s }}" {{ 'selected' if s == pre.size }}>{{ s }} ({{ label }})</option>{% endfor %}</select></label>
+    <label>Image size<input type="number" name="imgsz" value="{{ pre.imgsz }}" step="32"></label>
+    <label>Epochs<input type="number" name="epochs" value="{{ pre.epochs }}" min="1"></label>
+    <label>Batch<input type="number" name="batch" value="{{ pre.batch }}" min="1"><span class="hint">4 fits 8 GB at 1280</span></label>
+    <label>Patience<input type="number" name="patience" value="{{ pre.patience }}" min="0"></label>
+    <label>Seed<input type="number" name="seed" value="{{ pre.seed }}"><span class="hint">same seed + data = comparable runs</span></label>
+  </div>
+
+  <details class="advanced" {{ 'open' if src }}>
+    <summary>Advanced settings</summary>
+    <p class="small muted">Fields start at Ultralytics' defaults. Only values you change are passed to training.</p>
+    <div class="row">
+      <button type="button" id="use-football" data-values='{{ football|tojson }}'>Use football defaults</button>
+      <button type="button" id="use-defaults">Reset to Ultralytics defaults</button>
+    </div>
+    {% for group in ['Optimiser and learning rate', 'Augmentation', 'Run'] %}
+    <fieldset class="adv-group">
+      <legend>{{ group }}</legend>
+      <div class="adv-grid">
+      {% for g, key, kind, default, fb, extra in advanced if g == group %}
+        {% set v = pre[key] %}
+        {% if kind == 'bool' %}
+        <label class="inline adv-bool"><input type="checkbox" name="{{ key }}" data-default="{{ default|tojson }}" {{ 'checked' if v }}>{{ key }}{% if extra %} <span class="hint">{{ extra }}</span>{% endif %}</label>
+        {% elif kind == 'choice' %}
+        <label>{{ key }}<select name="{{ key }}" data-default="{{ default }}">{% for c in extra %}<option {{ 'selected' if c == v }}>{{ c }}</option>{% endfor %}</select>{% if key == 'optimizer' %}<span class="hint">auto picks its own learning rate</span>{% endif %}</label>
+        {% else %}
+        <label>{{ key }}<input {{ 'type=number step=any' if kind in ('int','float') else 'type=text' }} name="{{ key }}" value="{{ v }}" data-default="{{ default }}">{% if extra %}<span class="hint">{{ extra }}</span>{% endif %}</label>
+        {% endif %}
+      {% endfor %}
+      </div>
+    </fieldset>
+    {% endfor %}
+    <label style="margin-top:1rem">Extra arguments
+      <textarea name="extra" rows="3" placeholder="any other Ultralytics setting, one per line, e.g.&#10;fraction=0.5&#10;single_cls=False">{{ pre.extra }}</textarea>
+      <span class="hint">key=value, one per line. Checked against Ultralytics' own settings list before training starts.</span></label>
+  </details>
+
+  <div class="row" style="margin-top:1rem;align-items:center">
+    <input type="hidden" name="copy_to" id="copy-to" value="{{ pre.copy_to }}">
+    <button type="button" id="pick-copy-to">Copy results to a folder</button>
+    <span class="small" id="copy-to-note">{{ pre.copy_to or 'Optional. Kitman always keeps its own copy in kitman/data/runs.' }}</span>
+    <button type="button" class="link-btn" id="clear-copy-to" {{ '' if pre.copy_to else 'hidden' }}>Don't copy</button>
+  </div>
+  <div class="row" style="margin-top:1rem"><button class="primary" {{ 'disabled' if not batches }}>Start training</button></div>
+</form>
+
+<div data-live="runs">
+<h2>Your runs</h2>
+{% if runs %}
+<table>
+  <thead><tr><th>Run</th><th>Base</th><th class="r">Train</th><th class="r">Val</th><th>Status</th><th class="r">mAP50</th><th class="r">mAP50-95</th><th class="r">Ball recall</th><th>Started</th><th></th></tr></thead>
+  <tbody>
+  {% for r in runs %}{% set mt = r.metrics|fromjson %}{% set c = r.counts|fromjson %}
+    <tr><td><a href="{{ url_for('training_run', rid=r.id) }}">{{ r.id }}: {{ r.name }}</a></td><td class="small">{{ r.base_model.split('\\')[-1].split('/')[-1] }}</td>
+      <td class="r num">{{ c.train }}</td><td class="r num">{{ 'train' if c.val_from_train else c.val }}</td><td>{{ status(r.status) }}</td>
+      <td class="r num">{{ '%.3f'|format(mt.overall.map50) if mt else '–' }}</td><td class="r num">{{ '%.3f'|format(mt.overall.map50_95) if mt else '–' }}</td>
+      <td class="r num">{{ pct(mt.per_class.ball.recall) ~ '%' if mt and mt.per_class.ball else '–' }}</td>
+      <td class="small muted">{{ r.created|replace('T', ' ') }}</td>
+      <td>{% if r.status in ('queued', 'running') and r.id not in resumable %}
+        <form method="post" action="{{ url_for('training_pause', rid=r.id) }}"><button>Pause</button></form>
+      {% elif r.id in resumable or r.status in ('failed', 'paused') %}<div class="row">
+        {% if r.id in resumable %}<form method="post" action="{{ url_for('training_resume', rid=r.id) }}"><button>Resume</button></form>{% endif %}
+        <form method="post" action="{{ url_for('training_stop', rid=r.id) }}"
+              onsubmit="return confirm('Delete run {{ r.id }}? Its folder, weights and database record are removed; nothing of it is kept.')"><button>Delete</button></form>
+      </div>{% endif %}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}<p class="empty">No training runs yet. Tick a labelled batch with train frames above and start a run.</p>{% endif %}
+</div>
+
+{% endblock %}
+{% block scripts %}<script>trainingForm();</script>{% endblock %}

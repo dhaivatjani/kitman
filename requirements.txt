@@ -1,0 +1,9 @@
+# Install PyTorch first, from https://pytorch.org, for your CUDA version (pip alone gives a CPU-only build).
+# Versions are the ones Kitman was tested with.
+flask>=3.0
+ultralytics==8.4.190
+opencv-python>=4.10
+numpy>=2.0
+pandas>=2.2
+requests>=2.32
+pyyaml>=6.0

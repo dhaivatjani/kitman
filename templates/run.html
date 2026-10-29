@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% from "macros.html" import status, pct %}
+{% block title %}Run {{ run.id }}: Kitman{% endblock %}
+{% block body %}
+{% set p = run.params|fromjson %}{% set c = run.counts|fromjson %}{% set mt = run.metrics|fromjson %}{% set tm = run.test_metrics|fromjson %}
+<h1>Run {{ run.id }}: {{ run.name }}</h1>
+<p class="lede">{{ status(run.status) }} Started {{ run.created|replace('T', ' ') }}{% if run.finished %}, finished {{ run.finished|replace('T', ' ') }}{% endif %}.</p>
+<div class="row">
+  <a class="btn" href="{{ url_for('training_list', **{'from': run.id}) }}">Copy settings to a new run</a>
+  {% if run.status in ('queued', 'running') and not resumable %}
+  <form method="post" action="{{ url_for('training_pause', rid=run.id) }}"><button>Pause</button></form>
+  {% endif %}
+  {% if resumable %}
+  <form method="post" action="{{ url_for('training_resume', rid=run.id) }}"><button class="primary">Resume from last checkpoint</button></form>
+  {% endif %}
+  {% if run.status != 'done' %}
+  <form method="post" action="{{ url_for('training_stop', rid=run.id) }}"
+        onsubmit="return confirm('Stop run {{ run.id }} and delete it? Its folder and database record are removed; nothing of it is kept.')">
+    <button class="primary">{{ 'Stop and remove run' if run.status in ('queued', 'running') else 'Remove run' }}</button>
+  </form>
+  {% endif %}
+</div>
+{% if c.val_from_train %}<p class="flash error">This run had no val frames, so it was validated on its own train frames. Its mAP shows how well it fits what it learned, not how it does on new matches, so it will look better than it is. Add val labels for a fair number.</p>{% endif %}
+
+<ul class="facts">
+  <li><span class="num">{{ c.train }}</span><span>train frames</span></li>
+  <li><span class="num">{{ c.train if c.val_from_train else c.val }}</span><span>{{ 'val frames (the train frames, reused)' if c.val_from_train else 'val frames' }}</span></li>
+  <li><span class="num">{{ c.test }}</span><span>test frames (held out)</span></li>
+  {% if mt %}<li><span class="num">{{ '%.3f'|format(mt.overall.map50) }}</span><span>val mAP50</span></li>
+  <li><span class="num">{{ '%.3f'|format(mt.overall.map50_95) }}</span><span>val mAP50-95</span></li>{% endif %}
+</ul>
+
+<div class="two">
+  <div>
+    <h2 style="margin-top:0">Validation mAP50 per epoch</h2>
+    <svg class="chart" id="chart" viewBox="0 0 600 220" role="img" aria-label="Validation mAP per epoch"></svg>
+    <p class="small muted" id="chart-note">Waiting for the first epoch.</p>
+  </div>
+  <div>
+    <h2 style="margin-top:0">Settings</h2>
+    <dl class="kv">
+      <dt>Started from</dt><dd>{{ run.base_model }}</dd>
+      <dt>Image size</dt><dd class="num">{{ p.imgsz }}</dd>
+      <dt>Epochs</dt><dd class="num">{{ p.epochs }} (patience {{ p.patience }})</dd>
+      <dt>Batch</dt><dd class="num">{{ p.batch }}</dd>
+      <dt>Seed</dt><dd class="num">{{ p.seed }}</dd>
+      <dt>Folder</dt><dd class="small">{{ run.run_dir }}</dd>
+      {% if copy_to %}<dt>Copied to</dt><dd class="small">{{ copy_to }}\kitman_run{{ run.id }}</dd>{% endif %}
+    </dl>
+    <h3>Trained on</h3>
+    {% for s in sets %}<p class="small" style="margin:.2rem 0"><a href="{{ url_for('batch', bid=s.batch_id) }}">{{ s.batch_name }}</a>, round {{ s.round }}, {{ s.source }}</p>{% endfor %}
+    <p class="small muted">Every frame used is listed in frames.csv in the run folder.</p>
+    {% if model %}<h3>Produced</h3><p class="small">{{ model.name }}{% if used_by %}, used to pre-label {% for u in used_by %}<a href="{{ url_for('batch', bid=u.batch_id) }}">{{ u.batch_name }}</a>{{ ', ' if not loop.last }}{% endfor %}{% endif %}</p>{% endif %}
+  </div>
+</div>
+
+<h2>All training settings</h2>
+{% if used %}
+<p class="small muted">Every setting Ultralytics used for this run, from its own args.yaml. Highlighted rows are the ones Kitman passed; the rest are Ultralytics' defaults.</p>
+<details><summary class="small">Show all {{ used|length }} settings</summary>
+<div class="table-wrap"><table class="settings">
+  <thead><tr><th>Setting</th><th>Value</th></tr></thead>
+  <tbody>{% for k, v in used.items() %}<tr class="{{ 'passed' if k in passed }}"><td>{{ k }}</td><td class="small">{{ v }}</td></tr>{% endfor %}</tbody>
+</table></div>
+</details>
+{% else %}
+<p class="small muted">Settings Kitman passes to Ultralytics (the full list appears once training starts):</p>
+{% endif %}
+<p class="small">{% for k, v in passed.items() %}<code>{{ k }}={{ v }}</code>{{ ' ' if not loop.last }}{% endfor %}</p>
+
+{% for title, m in [('Validation', mt), ('Test', tm)] if m %}
+<h2>{{ title }} results per class</h2>
+<table>
+  <thead><tr><th>Class</th><th class="r">Precision</th><th class="r">Recall</th><th class="r">mAP50</th><th class="r">mAP50-95</th></tr></thead>
+  <tbody>
+  {% for name, v in m.per_class.items() %}
+    <tr><td><span class="swatch" style="background:var(--c-{{ name }})"></span> {{ name }}</td><td class="r num">{{ pct(v.precision) }}%</td><td class="r num">{{ pct(v.recall) }}%</td><td class="r num">{{ '%.3f'|format(v.map50) }}</td><td class="r num">{{ '%.3f'|format(v.map50_95) }}</td></tr>
+  {% endfor %}
+    <tr><td><b>All classes</b></td><td class="r num"><b>{{ pct(m.overall.precision) }}%</b></td><td class="r num"><b>{{ pct(m.overall.recall) }}%</b></td><td class="r num"><b>{{ '%.3f'|format(m.overall.map50) }}</b></td><td class="r num"><b>{{ '%.3f'|format(m.overall.map50_95) }}</b></td></tr>
+  </tbody>
+</table>
+{% endfor %}
+{% if mt and not tm and c.test %}
+<form method="post" action="{{ url_for('training_test', rid=run.id) }}" style="margin-top:1rem"><button>Evaluate on test matches</button> <span class="hint">Do this once, for the final number.</span></form>
+{% endif %}
+
+<h2>Training log</h2>
+<pre class="log" id="log">{{ '' }}</pre>
+{% endblock %}
+{% block scripts %}<script>followRun({{ run.id }}, {{ run.status|tojson }});</script>{% endblock %}

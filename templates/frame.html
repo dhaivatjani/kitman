@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% from "macros.html" import status, split %}
+{% block title %}{{ f.name }}: Kitman{% endblock %}
+{% block body %}
+<h1>{{ f.match_id }} <span class="num muted">{{ f.t|mmss }}</span></h1>
+<div class="row" style="margin-bottom:1.25rem">
+  <span class="muted">{{ f.name }}</span>
+  {% if prev_id %}<a class="btn" href="{{ url_for('frame', fid=prev_id) }}">Previous frame</a>{% endif %}
+  {% if next_id %}<a class="btn" href="{{ url_for('frame', fid=next_id) }}">Next frame</a>{% endif %}
+</div>
+
+<div class="viewer">
+  <div>
+    <div class="stage"><img id="img" src="{{ url_for('img', p=f.path) }}" alt="{{ f.name }}"><canvas id="boxes"></canvas></div>
+    {% if sets %}
+    <div class="row" style="margin-top:.75rem">
+      <label>Show labels<select id="set">{% for s in sets %}<option value="{{ loop.index0 }}">{{ s.kind|capitalize }} from {{ s.source }} ({{ s.boxes|length }} boxes)</option>{% endfor %}<option value="-1">None</option></select></label>
+      <div class="classes" id="toggles">{% for c in CLASSES %}<label class="inline"><input type="checkbox" value="{{ loop.index0 }}" checked><span class="swatch" style="background:var(--c-{{ c }})"></span>{{ c }}</label>{% endfor %}</div>
+    </div>
+    {% else %}<p class="muted small">No labels yet. Add this frame to a batch and pre-label it.</p>{% endif %}
+  </div>
+  <aside class="panel">
+    <h3 style="margin-top:0">Where it came from</h3>
+    <dl class="kv">
+      <dt>Match</dt><dd><a href="{{ url_for('match', mid=f.match_id) }}">{{ f.match_id }}</a> {{ split(f.split) }}</dd>
+      <dt>Time</dt><dd class="num">{{ '%.3f'|format(f.t) }} s</dd>
+      <dt>Frame</dt><dd class="num">{{ f.frame_idx }}</dd>
+      <dt>Sampling</dt><dd>{{ 'Custom plan' if run.mode == 'custom' else 'Fixed interval' }}, run {{ run.id }}</dd>
+      <dt>Bucket</dt><dd>{{ f.bucket }}</dd>
+      <dt>Status</dt><dd>{{ status(f.status) }}</dd>
+    </dl>
+    <h3>Batches</h3>
+    {% for b in batches %}<p class="small" style="margin:.2rem 0"><a href="{{ url_for('batch', bid=b.id) }}">{{ b.name }}</a>, round {{ b.round }}</p>{% else %}<p class="small muted">Not in a batch</p>{% endfor %}
+    <h3>Label sets</h3>
+    {% for s in sets %}<p class="small" style="margin:.2rem 0">{{ s.kind|capitalize }}, {{ s.source }}: <span class="num">{{ s.n_player }}</span> players, <span class="num">{{ s.n_goalkeeper }}</span> GK, <span class="num">{{ s.n_referee }}</span> ref, <span class="num">{{ s.n_ball }}</span> ball</p>{% else %}<p class="small muted">None</p>{% endfor %}
+    <h3>Used in training</h3>
+    {% for r in used_in %}<p class="small" style="margin:.2rem 0"><a href="{{ url_for('training_run', rid=r.id) }}">Run {{ r.id }}: {{ r.name }}</a></p>{% else %}<p class="small muted">Not yet</p>{% endfor %}
+  </aside>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  drawBoxes({{ sets|map(attribute='boxes')|list|tojson }}, {{ CLASSES|tojson }});
+</script>
+{% endblock %}

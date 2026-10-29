@@ -1,0 +1,18 @@
+# secrets: Roboflow API keys live here
+config.local.json
+
+# model files (large; download or retrain instead)
+*.pt
+weights/
+
+# everything Kitman generates: videos, frames, labels, runs, database
+data/
+
+# python cache
+__pycache__/
+*.pyc
+
+# editor / OS clutter
+.vscode/
+.idea/
+Thumbs.db

@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% from "macros.html" import pct %}
+{% block title %}Models: Kitman{% endblock %}
+{% block body %}
+<h1>Models</h1>
+<p class="lede">Every model Kitman can pre-label with or train from. Each trained model links back to its run, and from there to the batches and frames it learned from.</p>
+
+<form class="panel" method="post" action="{{ url_for('model_add') }}" enctype="multipart/form-data">
+  <h3 style="margin-top:0">Add a model</h3>
+  <p class="small muted" style="margin-top:0">Upload YOLO weights trained elsewhere. A model whose classes include player, goalkeeper, referee or ball is read by those names; a COCO model is read as person to player and sports ball to ball.</p>
+  <div class="row">
+    <label style="flex:1 1 18rem">Weights file (.pt)<input type="file" name="weights" accept=".pt" required></label>
+    <label style="flex:1 1 14rem">Name<input name="name" placeholder="e.g. Colab run, YOLO11s 1280"></label>
+    <button class="primary">Add model</button>
+  </div>
+</form>
+
+<h2>Your models</h2>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Model</th><th>From</th><th class="r">Train frames</th><th class="r">Val mAP50</th><th class="r">Ball recall</th><th class="r">Test mAP50</th><th class="r">Pre-labelled batches</th><th>Weights</th></tr></thead>
+  <tbody>
+  {% for m in models %}{% set mt = m.metrics|fromjson %}{% set tm = m.test_metrics|fromjson %}{% set c = m.counts|fromjson %}
+    <tr><td><b>{{ m.name }}</b></td>
+      <td>{% if m.source == 'run' %}<a href="{{ url_for('training_run', rid=m.training_run_id) }}">Run {{ m.training_run_id }}</a>{% elif m.source == 'uploaded' %}Uploaded{% else %}Pretrained on COCO{% endif %}</td>
+      <td class="r num">{{ c.train if c else '–' }}</td>
+      <td class="r num">{{ '%.3f'|format(mt.overall.map50) if mt else '–' }}</td>
+      <td class="r num">{{ pct(mt.per_class.ball.recall) ~ '%' if mt and mt.per_class.ball else '–' }}</td>
+      <td class="r num">{{ '%.3f'|format(tm.overall.map50) if tm else '–' }}</td>
+      <td class="r num">{{ m.n_prelabel_sets }}</td>
+      <td class="small muted path">{{ m.path }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

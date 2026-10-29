@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% from "macros.html" import split as split_tag, status %}
+{% block title %}Videos: Kitman{% endblock %}
+{% block body %}
+<h1>Videos</h1>
+<p class="lede">Every match recording Kitman works from. Added videos are stored in Kitman's own folder, then analysed for live play (about 2 minutes each). Choose each video's split when you add it; it can change until any of its frames have corrected labels.</p>
+
+<div class="modes">
+  <form class="panel" id="scan" method="post" action="{{ url_for('videos_scan') }}">
+    <h3>Add a folder</h3>
+    <p>Choose the folder with your recordings. Kitman lists the videos in it so you can pick a split for each before adding.</p>
+    <p class="small">Reads .mp4, .mkv, .mov, .avi, .webm and .m4v. Videos you've already added are listed but left unticked.</p>
+    <input type="hidden" name="folder" value="{{ folder }}">
+    <div class="row"><button type="button" class="primary" id="pick">Choose folder</button><span class="hint" id="pick-note" aria-live="polite">{{ folder }}</span></div>
+  </form>
+  <form class="panel" id="upload" method="post" action="{{ url_for('videos_upload') }}" enctype="multipart/form-data">
+    <h3>Upload videos</h3>
+    <p>For one or a few files. All files in one upload go to the same split.</p>
+    <label>Video files<input type="file" name="video" accept="video/*" multiple required></label>
+    <div class="row">
+      <label>Split<select name="split">{% for s in ['train','val','test'] %}<option>{{ s }}</option>{% endfor %}</select></label>
+      <label style="flex:1 1 12rem">Description<input name="description" placeholder="Optional"></label>
+    </div>
+    <div class="row"><button class="primary">Upload</button><span class="hint" id="upload-progress" aria-live="polite"></span></div>
+  </form>
+</div>
+
+{% if scan %}
+<h2>In {{ folder }}</h2>
+<form method="post" action="{{ url_for('videos_add_folder') }}">
+  <input type="hidden" name="folder" value="{{ folder }}">
+  <p class="small muted">Splits for the original 20 recordings are filled in from splits.csv.</p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Add</th><th>File</th><th class="r">Length</th><th>Size</th><th class="r">MB</th><th>Split</th></tr></thead>
+    <tbody>
+    {% for f in scan %}
+      {% if f.error %}
+      <tr><td></td><td>{{ f.file }}</td><td colspan="5" class="small">{{ f.error }}</td></tr>
+      {% else %}
+      <tr>
+        <td><input type="checkbox" name="file" value="{{ f.file }}" {{ '' if f.added else 'checked' }} aria-label="Add {{ f.file }}"></td>
+        <td>{{ f.file }}{% if f.added %} <span class="small muted">(already added)</span>{% endif %}</td>
+        <td class="r num">{{ f.duration_s|mmss }}</td>
+        <td class="small">{{ f.width }}×{{ f.height }}{% if (f.width, f.height) != (2400, 1080) %} <span class="warn-text">stretched to 2400×1080</span>{% endif %}</td>
+        <td class="r num">{{ f.size_mb }}</td>
+        <td><select name="split::{{ f.file }}" aria-label="Split for {{ f.file }}">{% for s in ['train','val','test'] %}<option {{ 'selected' if f.split == s }}>{{ s }}</option>{% endfor %}</select></td>
+      </tr>
+      {% endif %}
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <div class="row" style="margin-top:1rem"><button class="primary">Add ticked videos</button><a class="btn" href="{{ url_for('videos') }}">Cancel</a></div>
+</form>
+{% endif %}
+
+<div data-live="videos">
+<h2>Added videos <span class="muted small">{{ matches|length }}</span></h2>
+{% if matches %}
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Video</th><th>Original file</th><th class="r">Length</th><th>Size</th><th>Split</th><th>Status</th><th class="r">Frames</th><th></th></tr></thead>
+  <tbody>
+  {% for m in matches %}
+    <tr>
+      <td><a class="shirt-sm" href="{{ url_for('match', mid=m.id) }}">{{ m.id }}</a></td>
+      <td class="small">{{ m.file }}{% if m.description %}<br><span class="muted">{{ m.description }}</span>{% endif %}</td>
+      <td class="r num">{{ m.duration_s|mmss if m.duration_s else '–' }}</td>
+      <td class="small">{% if m.width %}{{ m.width }}×{{ m.height }}{% else %}–{% endif %}</td>
+      <td>
+        {% if m.split_locked %}{{ split_tag(m.split) }} <span class="small muted">locked</span>
+        {% else %}
+        <form method="post" action="{{ url_for('video_split', mid=m.id) }}" class="inline-form">
+          <select name="split" aria-label="Split for {{ m.id }}" onchange="this.form.submit()">{% for s in ['train','val','test'] %}<option {{ 'selected' if m.split == s }}>{{ s }}</option>{% endfor %}</select>
+          <noscript><button>Save</button></noscript>
+        </form>
+        {% endif %}
+      </td>
+      <td><span class="status {{ m.status if m.status in ('ready','failed') else 'running' }}">{{ {'queued':'Waiting','copying':'Storing','analysing':'Analysing','ready':'Ready','failed':'Failed'}[m.status] }}</span>
+        {% if m.message %}<div class="small {{ 'warn-text' if m.status != 'failed' else '' }}">{{ m.message }}</div>{% endif %}</td>
+      <td class="r num">{{ m.n_frames }}</td>
+      <td class="actions">
+        {% if m.status == 'failed' %}<form method="post" action="{{ url_for('video_retry', mid=m.id) }}"><button>Retry</button></form>{% endif %}
+        {% if not m.n_frames and m.status in ('ready','failed') %}
+        <form method="post" action="{{ url_for('video_remove', mid=m.id) }}" onsubmit="return confirm('Remove {{ m.id }} from Kitman? Its stored copy and analysis are deleted; your original file is not touched.')"><button>Remove</button></form>
+        {% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="empty">No videos yet. Add the folder with your match recordings above.</p>
+{% endif %}
+</div>
+{% endblock %}
+{% block scripts %}<script>pickFolder(); uploadWithProgress();</script>{% endblock %}

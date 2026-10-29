@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% from "macros.html" import timeline, legend, split %}
+{% block title %}Squad sheet: Kitman{% endblock %}
+{% block body %}
+<h1>Squad sheet</h1>
+<div data-live="squad">
+{% if not matches %}
+<p class="lede">Every match you add shows up here as a timeline of live play, with a tick for each frame you sample.</p>
+<p class="empty">No videos yet. <a href="{{ url_for('videos') }}">Add your match recordings</a> to get started.</p>
+</div>
+{% else %}
+<div data-live="squad">
+<p class="lede">{{ matches|length }} match{{ 'es' if matches|length != 1 }}, split by whole video. Each bar is the full recording; ticks above it are the frames you have sampled, coloured by how far they've got.</p>
+
+<ul class="facts">
+  <li><span class="num">{{ totals.frames or 0 }}</span><span>frames sampled</span></li>
+  <li><span class="num">{{ totals.corrected or 0 }}</span><span>corrected in Roboflow</span></li>
+  <li><span class="num">{{ totals.batches or 0 }}</span><span>batches</span></li>
+  <li><span class="num">{{ totals.runs or 0 }}</span><span>finished training runs</span></li>
+  {% if best %}{% set mt = best.metrics|fromjson %}
+  <li><span class="num">{{ '%.3f'|format(mt.overall.map50) }}</span><span>best val mAP50 (<a href="{{ url_for('training_run', rid=best.id) }}">run {{ best.id }}</a>)</span></li>
+  {% endif %}
+</ul>
+
+{{ legend() }}
+<div class="table-wrap">
+<table class="squad">
+  <thead><tr><th>Match</th><th>Split</th><th class="r">Live</th><th class="tl-cell">Recording</th><th class="r">Frames</th><th class="r">Corrected</th></tr></thead>
+  <tbody>
+  {% for m in matches %}
+    <tr>
+      <td><a class="shirt" href="{{ url_for('match', mid=m.id) }}">{{ m.id }}</a></td>
+      <td>{{ split(m.split) }}</td>
+      <td class="r num">{{ '%.1f min'|format(m.live_s / 60) if m.status == 'ready' else '–' }}</td>
+      <td class="tl-cell">{% if m.status == 'ready' %}{{ timeline(m) }}{% else %}<span class="small muted">{{ {'queued':'Waiting to be prepared','copying':'Storing','analysing':'Analysing live play','failed':'Preparing failed; see Videos'}[m.status] }}</span>{% endif %}</td>
+      <td class="r num">{{ m.n_frames }}</td>
+      <td class="r num">{{ m.n_corrected }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+</div>
+
+<p><a class="btn primary" href="{{ url_for('sampling_page') }}">Sample frames</a></p>
+{% endif %}
+{% endblock %}

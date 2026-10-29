@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% from "macros.html" import status, split %}
+{% block title %}{{ b.name }}: Kitman{% endblock %}
+{% block body %}
+{% set pre = sets|selectattr('kind', 'equalto', 'prelabel')|list %}
+{% set cor = sets|selectattr('kind', 'equalto', 'corrected')|list %}
+<h1>{{ b.name }}</h1>
+<div data-live="batch-head">
+<p class="lede">Round {{ b.round }}, {{ frames|length }} frames from {{ by_match|length }} matches. {{ status(b.status) }}{% if b.notes %} {{ b.notes }}{% endif %}</p>
+<p class="small muted">{% for mid, n in by_match|dictsort %}<a href="{{ url_for('match', mid=mid) }}">{{ mid }}</a> {{ n }}{{ ', ' if not loop.last }}{% endfor %}</p>
+</div>
+
+<ol class="steps">
+  <li class="{{ 'done' if pre }}">
+    <h3>Pre-label</h3>
+    <p>Run a model over the batch so Roboflow opens with boxes already drawn. Use the COCO model for round 1, then your latest Kitman model.</p>
+    <form class="row" method="post" action="{{ url_for('batch_prelabel', bid=b.id) }}">
+      <label>Model<select name="model_id">{% for m in models %}<option value="{{ m.id }}">{{ m.name }}</option>{% endfor %}</select></label>
+      <button class="primary">Pre-label {{ frames|length }} frames</button>
+    </form>
+  </li>
+  <li class="{{ 'done' if b.status in ('sent to Roboflow', 'corrected') }}">
+    <h3>Send to Roboflow</h3>
+    <p>Pick where the frames go and which label set goes up with them.</p>
+    {% if workspaces %}
+    <div class="row" id="rf-target" data-save="{{ url_for('batch_roboflow_target', bid=b.id) }}"
+         data-project="{{ b.rf_project or '' }}" data-sent-to="{{ b.rf_sent_to or '' }}">
+      <label>Workspace<select name="workspace">{% for ws in workspaces %}<option {{ 'selected' if ws == b.rf_workspace }}>{{ ws }}</option>{% endfor %}</select></label>
+      <label>Project<select name="project"><option value="">Loading…</option></select></label>
+      <label>Labels<select name="label_set_id" form="rf-send-form">
+        {% for s in sets|reverse %}<option value="{{ s.id }}" {{ 'selected' if pre and s.id == pre[-1].id }}>Set {{ s.id }}: {{ 'Pre-labels' if s.kind == 'prelabel' else 'Corrected' }}, {{ s.source }}</option>{% endfor %}
+        <option value="" {{ 'selected' if not pre }}>No labels (images only)</option></select></label>
+    </div>
+    <p class="hint" id="rf-note" style="margin:.25rem 0 1rem"></p>
+    {% endif %}
+    <div class="or">
+      <div>
+        <form method="post" id="rf-send-form" action="{{ url_for('batch_upload', bid=b.id) }}">
+          <button class="primary" id="rf-send" disabled>Send to Roboflow</button>
+        </form>
+        <p class="hint" style="margin-top:.5rem">{% if workspaces %}Uploads straight into the project above, tagged kitman-batch-{{ b.id }}.{% else %}Add a Roboflow API key in <a href="{{ url_for('settings') }}">Settings</a> first.{% endif %}</p>
+      </div>
+      <div>
+        <form method="post" action="{{ url_for('batch_zip', bid=b.id) }}"><button>Build zip for Roboflow</button></form>
+        {% for z in exports %}<p class="small" style="margin:.5rem 0 0"><a href="{{ url_for('batch_zip_download', bid=b.id, name=z.name) }}" download>Download {{ z.name }}</a> <span class="muted">({{ (z.stat().st_size / 1048576)|round(1) }} MB)</span></p>{% endfor %}
+        <p class="hint" style="margin-top:.5rem">One zip in Roboflow's YOLO layout, with the latest pre-labels{% if pre %} (set {{ pre[-1].id }}){% endif %}. Upload it in Roboflow under Upload data.</p>
+      </div>
+    </div>
+  </li>
+  <li class="{{ 'done' if cor }}">
+    <h3>Bring the corrections back</h3>
+    <p>When you've finished in Roboflow, generate a dataset version there, then pull it, or export it as YOLO and upload the zip.</p>
+    <div class="or">
+      <form method="post" action="{{ url_for('batch_pull', bid=b.id) }}">
+        <div class="row"><label>Version of the project above<select name="version" id="rf-versions"><option value="">Choose a project first</option></select></label>
+        <button class="primary" id="rf-pull" disabled>Pull from Roboflow</button></div>
+      </form>
+      <form method="post" action="{{ url_for('batch_import', bid=b.id) }}" enctype="multipart/form-data">
+        <div class="row"><label>Roboflow export (.zip)<input type="file" name="zip" accept=".zip"></label><button>Import zip</button></div>
+      </form>
+    </div>
+  </li>
+</ol>
+
+<div data-live="batch-body">
+<h2>Label sets</h2>
+{% if sets %}
+<table>
+  <thead><tr><th>Set</th><th>Kind</th><th>Source</th><th class="r">Frames</th><th class="r">Players</th><th class="r">Goalkeepers</th><th class="r">Referees</th><th class="r">Balls</th><th>Created</th><th></th></tr></thead>
+  <tbody>{% for s in sets %}
+    <tr><td class="num">{{ s.id }}</td><td>{{ 'Pre-labels' if s.kind == 'prelabel' else 'Corrected' }}</td><td>{{ s.source }}</td>
+      <td class="r num">{{ s.n }}</td><td class="r num">{{ s.n_player or 0 }}</td><td class="r num">{{ s.n_goalkeeper or 0 }}</td><td class="r num">{{ s.n_referee or 0 }}</td><td class="r num">{{ s.n_ball or 0 }}</td>
+      <td class="small muted">{{ s.created|replace('T', ' ') }}</td>
+      <td class="r">{% if s.id in trained %}<span class="small muted" title="A training run used this set">Used in training</span>{% else %}
+        <form method="post" action="{{ url_for('batch_label_delete', bid=b.id, sid=s.id) }}"
+              onsubmit="return confirm('Delete label set {{ s.id }} ({{ s.source }})? Its label files are removed too.')"><button>Delete</button></form>{% endif %}</td></tr>
+  {% endfor %}</tbody>
+</table>
+{% else %}<p class="empty">No labels yet. Start with step 1.</p>{% endif %}
+
+<h2>Frames</h2>
+<div class="grid">
+{% for f in frames %}
+  <a class="tile" href="{{ url_for('frame', fid=f.id) }}">
+    <img loading="lazy" src="{{ url_for('thumb', p=f.path) }}" alt="{{ f.name }}">
+    <div><span><b class="num">{{ f.match_id }}</b> <span class="num">{{ f.t|mmss }}</span></span>{{ status(f.status) }}</div>
+  </a>
+{% endfor %}
+</div>
+</div>
+{% endblock %}
+{% block scripts %}<script>roboflowTarget();</script>{% endblock %}

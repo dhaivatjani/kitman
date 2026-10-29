@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Settings: Kitman{% endblock %}
+{% block body %}
+<h1>Settings</h1>
+<p class="lede">Roboflow API keys for sending batches and pulling corrections. They're saved only on this computer, in kitman/config.local.json. Each batch picks its own workspace and project on its page.</p>
+<div class="panel" style="max-width:40rem">
+  <h3>Workspaces</h3>
+  {% if workspaces %}
+  <table>
+    <tbody>{% for ws in workspaces %}
+      <tr><td>{{ ws }}</td><td class="r">
+        <form method="post" onsubmit="return confirm('Remove the key for {{ ws }}? Batches that use it can\'t send or pull until you add it again.')">
+          <input type="hidden" name="remove" value="{{ ws }}"><button>Remove</button></form></td></tr>
+    {% endfor %}</tbody>
+  </table>
+  {% else %}<p class="empty">No workspaces yet. Add an API key below.</p>{% endif %}
+  <form method="post" class="row" style="flex-direction:column;align-items:stretch;margin-top:1rem">
+    <label>Add a workspace's API key
+      <input type="password" name="roboflow_api_key" autocomplete="off" required placeholder="Paste the workspace's private API key">
+      <span class="hint">In Roboflow: open the workspace, then Settings, then API Keys. A key opens one workspace, so add one key per workspace. Kitman works out which workspace it belongs to.</span></label>
+    <div><button class="primary">Add workspace</button></div>
+  </form>
+</div>
+<p class="small muted" style="margin-top:1rem">The Roboflow project's classes must be named player, goalkeeper, referee and ball. Kitman matches classes by name, so their order in Roboflow doesn't matter.</p>
+{% endblock %}

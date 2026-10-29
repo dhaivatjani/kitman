@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% from "macros.html" import status, video_picker %}
+{% block title %}Batches: Kitman{% endblock %}
+{% block body %}
+<h1>Batches</h1>
+<p class="lede">A batch is the set of frames you label together in one round: pre-label it, send it to Roboflow, bring the corrections back. Only frames that aren't in another batch are picked, so no frame is labelled twice. In Roboflow each frame lands in train, valid or test by its video's split; splits with no videos in the batch are left out.</p>
+
+<form class="panel" method="post" action="{{ url_for('batch_new') }}">
+  <h3 style="margin-top:0">New batch</h3>
+  <div class="row">
+    <label style="flex:1 1 16rem">Name<input name="name" required placeholder="Round {{ next_round }} train seed"></label>
+    <label>Round<input type="number" name="round" value="{{ next_round }}" min="1"></label>
+    {{ video_picker(matches) }}
+    <label>Sampling<select name="mode"><option value="">Any</option><option value="custom">Custom plan</option><option value="fixed">Fixed interval</option></select></label>
+  </div>
+  <div class="row" style="margin-top:.9rem">
+    <label>How many frames<input type="number" name="limit" min="0" placeholder="All"><span class="hint">Spread evenly across matches</span></label>
+    <label>Seed<input type="number" name="seed" value="0"></label>
+    <label style="flex:1 1 14rem">Notes<input name="notes" placeholder="Optional"></label>
+    <label class="inline"><input type="checkbox" name="include_clips">Include tracking-clip frames</label>
+    <button class="primary">Create batch</button>
+  </div>
+</form>
+
+<div data-live="batches">
+<h2>Your batches</h2>
+<p class="small muted">{{ free }} sampled frames are not in any batch yet.</p>
+{% if batches %}
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Batch</th><th class="r">Round</th><th class="r">Frames</th><th class="r">Train</th><th class="r">Val</th><th class="r">Test</th><th>Status</th><th>Created</th></tr></thead>
+  <tbody>
+  {% for b in batches %}
+    <tr><td><a href="{{ url_for('batch', bid=b.id) }}">{{ b.name }}</a></td><td class="r num">{{ b.round }}</td>
+      <td class="r num">{{ b.n }}</td><td class="r num">{{ b.n_train or 0 }}</td><td class="r num">{{ b.n_val or 0 }}</td><td class="r num">{{ b.n_test or 0 }}</td>
+      <td>{{ status(b.status) }}</td><td class="small muted">{{ b.created|replace('T', ' ') }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}<p class="empty">No batches yet. Sample some frames, then create the first batch above.</p>{% endif %}
+</div>
+{% endblock %}

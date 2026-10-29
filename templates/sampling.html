@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% from "macros.html" import status, scope_select %}
+{% block title %}Sampling: Kitman{% endblock %}
+{% block body %}
+<h1>Sampling</h1>
+<p class="lede">Pick frames from your videos for labelling. Sample a whole group or a single video, with either mode. A frame sampled twice is only stored once.</p>
+
+{% if not matches %}
+<p class="empty">No videos yet. <a href="{{ url_for('videos') }}">Add your match recordings</a> first.</p>
+{% else %}
+<div class="modes">
+  <form class="panel" method="post" action="{{ url_for('sample') }}">
+    <input type="hidden" name="mode" value="custom">
+    <h3>Custom plan</h3>
+    <p>Live play: train gets one frame per {{ custom.train_window_s|int }} s window, by quota (50% random, 20% fast pan, 20% ball missed, 10% edge cases), at least {{ custom.min_gap_s|int }} s apart; val and test get one per {{ custom.eval_window_s|int }} s plus a {{ custom.clip_s|int }} s tracking clip.</p>
+    <p>Plus non-live frames: replays and cutscenes (label their players as usual) and menus, loading and black screens (negatives, left empty).</p>
+    <div class="row">
+      {{ scope_select(matches, pick, 'scope-custom') }}
+      <label>Seed<input type="number" name="seed" value="{{ custom.seed }}"></label>
+      <label>Non-live per live frame<input type="number" name="nonlive_ratio" value="{{ custom.nonlive_ratio }}" min="0" max="5" step="0.1"><span class="hint">1 = as many as live; 0 = none</span></label>
+      <button class="primary">Sample with custom plan</button>
+    </div>
+  </form>
+  <form class="panel" method="post" action="{{ url_for('sample') }}">
+    <input type="hidden" name="mode" value="fixed">
+    <h3>Fixed interval</h3>
+    <p>One frame every N seconds from start to end. Nothing is skipped: replays, cutscenes and menus are kept.</p>
+    <div class="row">
+      {{ scope_select(matches, pick, 'scope-fixed') }}
+      <label>Every<input type="number" name="interval_s" value="{{ fixed.interval_s }}" min="0.1" step="0.1"><span class="hint">seconds</span></label>
+      <button class="primary">Sample at fixed interval</button>
+    </div>
+  </form>
+</div>
+{% endif %}
+
+<div data-live="sample-runs">
+<h2>Sampling runs</h2>
+{% if runs %}
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Run</th><th>Video</th><th>Mode</th><th>Settings</th><th>Status</th><th class="r">Frames</th><th>Started</th></tr></thead>
+  <tbody>
+  {% for r in runs %}{% set p = r.params|fromjson %}
+    <tr><td class="num">{{ r.id }}</td><td><a class="shirt-sm" href="{{ url_for('match', mid=r.match_id) }}">{{ r.match_id }}</a></td>
+      <td>{{ 'Custom plan' if r.mode == 'custom' else 'Fixed interval' }}</td>
+      <td class="small">{% if r.mode == 'fixed' %}every {{ p.interval_s }} s{% else %}seed {{ p.seed }}{% endif %}</td>
+      <td>{{ status(r.status) }}</td><td class="r num">{{ r.n_frames }}</td><td class="small muted">{{ r.created|replace('T', ' ') }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}<p class="empty">Nothing sampled yet. Choose matches and a mode above.</p>{% endif %}
+</div>
+{% endblock %}
