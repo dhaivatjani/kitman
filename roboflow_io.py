@@ -9,6 +9,7 @@ maps class names (not ids, which Roboflow may reorder) onto ours.
 """
 
 import io
+import json
 import tempfile
 from time import sleep
 import zipfile
@@ -18,9 +19,10 @@ from pathlib import Path
 import requests
 import yaml
 
+import classes
 import db
 import labels
-from config import CLASSES, DATA, SAMPLING_DIR, roboflow_keys
+from config import DATA, SAMPLING_DIR, roboflow_keys
 
 
 RF_SPLIT = {"train": "train", "val": "valid", "test": "test"}   # Kitman split -> Roboflow folder / split name
@@ -42,7 +44,7 @@ def data_yaml(splits):
     """Only the splits the batch actually has (a train-only batch gets no val/test entries)."""
     keys = {"train": "train", "valid": "val", "test": "test"}
     return yaml.safe_dump({keys[s]: f"{s}/images" for s in ("train", "valid", "test") if s in splits}
-                          | {"nc": len(CLASSES), "names": CLASSES}, sort_keys=False)
+                          | {"nc": len(names := classes.names()), "names": names}, sort_keys=False)
 
 
 # ---------------------------------------------------------------- B: zip out
@@ -79,11 +81,10 @@ def import_files(batch_id, files, source):
         raise ValueError("No data.yaml in the export. Export from Roboflow in a YOLO format.")
     names = yaml.safe_load(files[min(yamls, key=lambda p: p.count("/"))]).get("names", [])
     names = [names[k] for k in sorted(names)] if isinstance(names, dict) else names
-    unknown = [n for n in names if n not in CLASSES]
+    remap, unknown = classes.read_names(dict(enumerate(names)))   # merged names land on their new class
     if unknown:
         raise ValueError(f"Roboflow classes not in Kitman: {', '.join(unknown)}. "
-                         f"Rename them in Roboflow to one of: {', '.join(CLASSES)}.")
-    remap = {i: CLASSES.index(n) for i, n in enumerate(names)}
+                         f"Rename them in Roboflow to one of: {', '.join(classes.names())}, or add them on the Classes page.")
 
     frames = {Path(f["name"]).stem: f for f in batch_frames(batch_id)}
     ls = db.x("INSERT INTO label_set (batch_id, kind, source, created) VALUES (?,?,?,?)",
@@ -104,7 +105,8 @@ def import_files(batch_id, files, source):
         bad = {c for c, *_ in boxes if c not in remap}
         if bad:
             raise ValueError(f"{Path(path).name}: class ids {sorted(bad)} are not in data.yaml")
-        rows.append(labels.write(ls, f, [(remap[c], *v) for c, *v in boxes]))
+        # boxes of a deleted class (remap None) are dropped on arrival
+        rows.append(labels.write(ls, f, [(remap[c], *v) for c, *v in boxes if remap[c] is not None]))
         seen.add(stem)
     if not rows:
         db.x("DELETE FROM label_set WHERE id=?", (ls,))
@@ -204,11 +206,11 @@ def api_upload(job, batch_id, label_set_id):
     frames = batch_frames(batch_id)
     by_frame = {r["frame_id"]: r for r in db.q("SELECT * FROM label WHERE label_set_id=?", (label_set_id,))}
     proj = project(b["rf_workspace"], b["rf_project"])
-    labelmap = dict(enumerate(CLASSES))
+    labelmap = dict(enumerate(classes.names()))
 
     def send(f):
         row = by_frame.get(f["id"])
-        ann = DATA / row["path"] if row and sum(row[f"n_{c}"] for c in CLASSES) else None
+        ann = DATA / row["path"] if row and sum(json.loads(row["counts"]).values()) else None
         # The SDK never retries label saves, so retry the whole frame on a dropped connection;
         # Roboflow keeps one copy of a re-sent image, and labels already there come back as a 409.
         for attempt in range(4):

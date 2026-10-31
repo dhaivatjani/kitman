@@ -3,10 +3,12 @@
 {% block title %}Run {{ run.id }}: Kitman{% endblock %}
 {% block body %}
 {% set p = run.params|fromjson %}{% set c = run.counts|fromjson %}{% set mt = run.metrics|fromjson %}{% set tm = run.test_metrics|fromjson %}
+{% set zip_control %}<a class="btn primary" href="{{ url_for('training_zip', rid=run.id) }}">Download dataset zip</a>{% endset %}
 <h1>Run {{ run.id }}: {{ run.name }}</h1>
-<p class="lede">{{ status(run.status) }} Started {{ run.created|replace('T', ' ') }}{% if run.finished %}, finished {{ run.finished|replace('T', ' ') }}{% endif %}.</p>
-<div class="row">
+<p class="lede">{{ status(run.status) }} Started {{ run.created|replace('T', ' ') }}{% if run.finished %}, finished {{ run.finished|replace('T', ' ') }}{% endif %}.{% if run.status == 'exported' %} Waiting for a model trained elsewhere.{% endif %}{% if imported %} Trained elsewhere; model imported {{ imported.at|replace('T', ' ') }} from {{ imported.from }}.{% endif %}</p>
+<div class="row" style="margin-bottom:1.25rem">
   <a class="btn" href="{{ url_for('training_list', **{'from': run.id}) }}">Copy settings to a new run</a>
+  {% if run.status != 'exported' and run.run_dir %}{{ zip_control }}{% endif %}
   {% if run.status in ('queued', 'running') and not resumable %}
   <form method="post" action="{{ url_for('training_pause', rid=run.id) }}"><button>Pause</button></form>
   {% endif %}
@@ -22,6 +24,8 @@
 </div>
 {% if c.val_from_train %}<p class="flash error">This run had no val frames, so it was validated on its own train frames. Its mAP shows how well it fits what it learned, not how it does on new matches, so it will look better than it is. Add val labels for a fair number.</p>{% endif %}
 
+{% if diffs %}<p class="flash error">Trained elsewhere with settings that differ from the plan: {% for k, (want, got) in diffs.items() %}{{ k }} {{ got }} (planned {{ want }}){{ ', ' if not loop.last }}{% endfor %}. The settings below are the ones it was trained with, and Kitman scored it at image size {{ p.imgsz }}.</p>{% endif %}
+
 <ul class="facts">
   <li><span class="num">{{ c.train }}</span><span>train frames</span></li>
   <li><span class="num">{{ c.train if c.val_from_train else c.val }}</span><span>{{ 'val frames (the train frames, reused)' if c.val_from_train else 'val frames' }}</span></li>
@@ -30,16 +34,51 @@
   <li><span class="num">{{ '%.3f'|format(mt.overall.map50_95) }}</span><span>val mAP50-95</span></li>{% endif %}
 </ul>
 
-<div class="two">
-  <div>
-    <h2 style="margin-top:0">Validation mAP50 per epoch</h2>
-    <svg class="chart" id="chart" viewBox="0 0 600 220" role="img" aria-label="Validation mAP per epoch"></svg>
-    <p class="small muted" id="chart-note">Waiting for the first epoch.</p>
-  </div>
-  <div>
+{% if run.status == 'exported' %}
+<ol class="steps" style="margin-bottom:2.5rem">
+  <li>
+    <h3>Download the dataset</h3>
+    <p>The run's {{ c.train + c.val + c.test }} frames and labels in YOLO format, with a data.yaml that works wherever you unzip it, plus frames.csv and kitman_run.json for the record.</p>
+    <div class="row" style="align-items:center">{{ zip_control }}<span class="hint">Made when you click, then kept for 12 hours.</span></div>
+    <p class="cmd-lead">Unzip it on the machine with the GPU and run this next to data.yaml:</p>
+    <div class="cmd"><pre id="train-cmd">{{ command }}</pre><button type="button" class="cmd-copy" data-copy="train-cmd" aria-label="Copy the train command">Copy</button></div>
+    <p class="small">The trained model lands in <code>runs/train</code>. Bring that folder back in step 2.</p>
+  </li>
+  <li>
+    <h3>Bring the trained model back</h3>
+    <p>Use whichever you have. Kitman checks the model's classes, then scores it here on this run's own frames, so its numbers line up with runs trained here.</p>
+    <div class="modes import-opts">
+      <form method="post" enctype="multipart/form-data" action="{{ url_for('training_import', rid=run.id) }}">
+        <h3>Training folder, zipped</h3>
+        <p>A zip of <code>runs/train</code>. Brings the epoch chart, args.yaml, plots and last.pt.</p>
+        <div class="pick"><label class="drop"><input type="file" name="weights" accept=".zip" required aria-label="Training folder zip">
+          <span>Choose the zip, or drop it here</span></label>
+          <button class="primary" disabled>Import and score</button></div>
+      </form>
+      <form method="post" action="{{ url_for('training_import', rid=run.id) }}" id="import-folder">
+        <h3>Training folder on this PC</h3>
+        <p>Already unzipped or copied here? Pick the <code>train</code> folder. Same result as the zip, nothing uploaded.</p>
+        <input type="hidden" name="folder">
+        <div class="pick"><p class="small" id="pick-import-note" aria-live="polite"></p>
+          <button type="button" class="primary" id="pick-import">Choose folder and import</button></div>
+      </form>
+      <form method="post" enctype="multipart/form-data" action="{{ url_for('training_import', rid=run.id) }}">
+        <h3>Just best.pt</h3>
+        <p>Weights only. Scores work; no epoch chart or remote settings.</p>
+        <div class="pick"><label class="drop"><input type="file" name="weights" accept=".pt" required aria-label="best.pt">
+          <span>Choose best.pt, or drop it here</span></label>
+          <button class="primary" disabled>Import and score</button></div>
+      </form>
+    </div>
+  </li>
+</ol>
+{% endif %}
+
+{% set settings_block %}
     <h2 style="margin-top:0">Settings</h2>
     <dl class="kv">
       <dt>Started from</dt><dd>{{ run.base_model }}</dd>
+      {% if imported and used %}<dt>Trained on</dt><dd class="small">{{ used.data }}</dd>{% endif %}
       <dt>Image size</dt><dd class="num">{{ p.imgsz }}</dd>
       <dt>Epochs</dt><dd class="num">{{ p.epochs }} (patience {{ p.patience }})</dd>
       <dt>Batch</dt><dd class="num">{{ p.batch }}</dd>
@@ -47,11 +86,23 @@
       <dt>Folder</dt><dd class="small">{{ run.run_dir }}</dd>
       {% if copy_to %}<dt>Copied to</dt><dd class="small">{{ copy_to }}\kitman_run{{ run.id }}</dd>{% endif %}
     </dl>
-    <h3>Trained on</h3>
+{% endset %}{% set lineage_block %}
     {% for s in sets %}<p class="small" style="margin:.2rem 0"><a href="{{ url_for('batch', bid=s.batch_id) }}">{{ s.batch_name }}</a>, round {{ s.round }}, {{ s.source }}</p>{% endfor %}
     <p class="small muted">Every frame used is listed in frames.csv in the run folder.</p>
     {% if model %}<h3>Produced</h3><p class="small">{{ model.name }}{% if used_by %}, used to pre-label {% for u in used_by %}<a href="{{ url_for('batch', bid=u.batch_id) }}">{{ u.batch_name }}</a>{{ ', ' if not loop.last }}{% endfor %}{% endif %}</p>{% endif %}
+{% endset %}
+<div class="two">
+  {% if run.status == 'exported' %}
+  <div>{{ settings_block }}</div>
+  <div><h2 style="margin-top:0">Trained on</h2>{{ lineage_block }}</div>
+  {% else %}
+  <div>
+    <h2 style="margin-top:0">Validation mAP50 per epoch</h2>
+    <svg class="chart" id="chart" viewBox="0 0 600 220" role="img" aria-label="Validation mAP per epoch"></svg>
+    <p class="small muted" id="chart-note">Waiting for the first epoch.</p>
   </div>
+  <div>{{ settings_block }}<h3>Trained on</h3>{{ lineage_block }}</div>
+  {% endif %}
 </div>
 
 <h2>All training settings</h2>
@@ -80,11 +131,24 @@
   </tbody>
 </table>
 {% endfor %}
+{% if imported and imported.remote %}{% set r = imported.remote %}
+<h2>Scores: here vs. where it trained</h2>
+<p class="small muted">Kitman's numbers come from scoring best.pt here on this run's dataset; they are the ones in the runs table. The remote numbers are from its results.csv, epoch {{ r.epoch }}. A big gap means different data or settings.</p>
+<table>
+  <thead><tr><th></th><th class="r">Precision</th><th class="r">Recall</th><th class="r">mAP50</th><th class="r">mAP50-95</th></tr></thead>
+  <tbody>
+    <tr><td><b>Kitman (scored here)</b></td><td class="r num">{{ pct(mt.overall.precision) }}%</td><td class="r num">{{ pct(mt.overall.recall) }}%</td><td class="r num">{{ '%.3f'|format(mt.overall.map50) }}</td><td class="r num">{{ '%.3f'|format(mt.overall.map50_95) }}</td></tr>
+    <tr><td class="muted">Reported where it trained</td><td class="r num muted">{{ pct(r.precision) }}%</td><td class="r num muted">{{ pct(r.recall) }}%</td><td class="r num muted">{{ '%.3f'|format(r.map50) if r.map50 is not none else '–' }}</td><td class="r num muted">{{ '%.3f'|format(r.map50_95) if r.map50_95 is not none else '–' }}</td></tr>
+  </tbody>
+</table>
+{% endif %}
 {% if mt and not tm and c.test %}
 <form method="post" action="{{ url_for('training_test', rid=run.id) }}" style="margin-top:1rem"><button>Evaluate on test matches</button> <span class="hint">Do this once, for the final number.</span></form>
 {% endif %}
 
+<div {{ 'hidden' if run.status == 'exported' or imported }}>
 <h2>Training log</h2>
 <pre class="log" id="log">{{ '' }}</pre>
+</div>
 {% endblock %}
-{% block scripts %}<script>followRun({{ run.id }}, {{ run.status|tojson }});</script>{% endblock %}
+{% block scripts %}<script>followRun({{ run.id }}, {{ run.status|tojson }}); exportedRun();</script>{% endblock %}

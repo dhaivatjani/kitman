@@ -50,8 +50,15 @@ CREATE TABLE IF NOT EXISTS label_set (
 
 CREATE TABLE IF NOT EXISTS label (
   label_set_id INTEGER NOT NULL REFERENCES label_set(id), frame_id INTEGER NOT NULL REFERENCES frame(id),
-  path TEXT NOT NULL, n_player INTEGER, n_goalkeeper INTEGER, n_referee INTEGER, n_ball INTEGER,
+  path TEXT NOT NULL, counts TEXT NOT NULL DEFAULT '{}',   -- {class name: boxes}
   PRIMARY KEY (label_set_id, frame_id));
+
+-- Class ids are positions in the name-sorted list, so adding, merging or deleting renumbers them.
+CREATE TABLE IF NOT EXISTS class (name TEXT PRIMARY KEY, color TEXT NOT NULL);
+
+-- Names merged away (target = the class they became) or deleted (target NULL), so a Roboflow
+-- export that still uses them imports anyway.
+CREATE TABLE IF NOT EXISTS class_alias (name TEXT PRIMARY KEY, target TEXT);
 
 CREATE TABLE IF NOT EXISTS training_run (
   id INTEGER PRIMARY KEY, name TEXT NOT NULL, base_model TEXT NOT NULL, params TEXT NOT NULL,
@@ -113,6 +120,19 @@ def init():
         if "rf_sent_to" not in [r[1] for r in con.execute("PRAGMA table_info(batch)")]:   # where the frames really went
             con.execute("ALTER TABLE batch ADD COLUMN rf_sent_to TEXT")
             con.execute("UPDATE batch SET rf_sent_to=rf_project WHERE status IN ('sent to Roboflow','corrected')")
+        if "n_player" in [r[1] for r in con.execute("PRAGMA table_info(label)")]:   # counts were fixed columns
+            con.execute("ALTER TABLE label ADD COLUMN counts TEXT NOT NULL DEFAULT '{}'")
+            con.execute("UPDATE label SET counts=json_object('ball',n_ball,'goalkeeper',n_goalkeeper,"
+                        "'player',n_player,'referee',n_referee)")
+            for c in ("n_player", "n_goalkeeper", "n_referee", "n_ball"):
+                con.execute(f"ALTER TABLE label DROP COLUMN {c}")
+        if not con.execute("SELECT 1 FROM class").fetchone():   # the classes Kitman shipped with
+            con.executemany("INSERT INTO class VALUES (?,?)", [("ball", "#E0218A"), ("goalkeeper", "#0096C7"),
+                                                              ("player", "#E63946"), ("referee", "#F2C200")])
+        # runs keep the class list their label files were written with
+        con.execute("UPDATE training_run SET counts=json_set(counts,'$.classes',"
+                    "json('[\"ball\",\"goalkeeper\",\"player\",\"referee\"]')) "
+                    "WHERE counts IS NOT NULL AND json_extract(counts,'$.classes') IS NULL")
         from config import COCO_MODEL
         if not con.execute("SELECT 1 FROM model WHERE kind='coco'").fetchone():
             con.execute("INSERT INTO model (name, path, kind, created) VALUES (?,?,?,?)",

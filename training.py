@@ -10,10 +10,14 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
+import zipfile
 from pathlib import Path
 
 import db
-from config import CLASSES, DATA, KITMAN, SAMPLING_DIR
+import classes
+from config import DATA, KITMAN, SAMPLING_DIR
 
 # COCO-pretrained starting weights, as Ultralytics names them (v8 keeps the "v"; 11, 12 and 26 don't).
 VERSIONS = {"26": "yolo26", "12": "yolo12", "11": "yolo11", "v8": "yolov8"}
@@ -164,7 +168,19 @@ def train_args(params):
     return args | params.get("extra", {})
 
 
-def create(name, base_model, params, label_set_ids, advanced=None, extra=None, copy_to=""):
+def data_yaml(counts, root=None):
+    """root: the absolute dataset folder, for Kitman's own runs. None (exported zip): Ultralytics then
+    resolves train/val/test next to data.yaml, wherever the zip is unpacked."""
+    return ((f"path: {root.as_posix()}\n" if root else "")
+            + f"train: train/images\nval: {'train' if counts['val_from_train'] else 'val'}/images\n"
+            + ("test: test/images\n" if counts["test"] else "")
+            + "names:\n" + "".join(f"  {i}: {n}\n" for i, n in enumerate(counts["classes"])))
+
+
+def create(name, base_model, params, label_set_ids, advanced=None, extra=None, copy_to="", export=False):
+    """export: build the dataset but don't train here; the run waits as 'exported' for a model trained elsewhere."""
+    if classes.pending:   # its label files would be copied half renumbered
+        raise ValueError("Labels are being renumbered after a class change. Start the run in a few seconds.")
     params = DEFAULTS | {k: v for k, v in params.items() if v not in (None, "")}
     params |= {"advanced": advanced or {"workers": 2}, "extra": extra or {}, "copy_to": copy_to}
     frames = labelled_frames(label_set_ids)
@@ -174,9 +190,11 @@ def create(name, base_model, params, label_set_ids, advanced=None, extra=None, c
                          f"{counts['test']} test). Pick a batch with train frames.")
     # No val frames: validate on the train frames. Scores are then optimistic, which the run page says.
     counts["val_from_train"] = not counts["val"]
+    counts["classes"] = classes.names()   # what the copied label files' ids mean, whatever the Classes page does later
     run_id = db.x("INSERT INTO training_run (name, base_model, params, label_set_ids, counts, status, created) "
                   "VALUES (?,?,?,?,?,?,?)",
-                  (name, base_model, db.jdump(params), db.jdump(label_set_ids), db.jdump(counts), "queued", db.now()))
+                  (name, base_model, db.jdump(params), db.jdump(label_set_ids), db.jdump(counts),
+                   "exported" if export else "queued", db.now()))
     run_dir = DATA / "runs" / f"run{run_id}"
     ds = run_dir / "dataset"
     for f in frames:
@@ -184,16 +202,14 @@ def create(name, base_model, params, label_set_ids, advanced=None, extra=None, c
             (ds / f["split"] / sub).mkdir(parents=True, exist_ok=True)
         link(SAMPLING_DIR / f["path"], ds / f["split"] / "images" / f["name"])
         shutil.copy2(DATA / f["label_path"], ds / f["split"] / "labels" / (f["name"].rsplit(".", 1)[0] + ".txt"))
-    (ds / "data.yaml").write_text(
-        f"path: {ds.as_posix()}\ntrain: train/images\nval: {'train' if counts['val_from_train'] else 'val'}/images\n"
-        + ("test: test/images\n" if counts["test"] else "")
-        + "names:\n" + "".join(f"  {i}: {n}\n" for i, n in enumerate(CLASSES)), encoding="utf-8")
+    (ds / "data.yaml").write_text(data_yaml(counts, ds), encoding="utf-8")
     with open(run_dir / "frames.csv", "w", newline="", encoding="utf-8") as fh:   # exact lineage of this run
         w = csv.writer(fh)
         w.writerow(["frame", "match", "split", "t", "label_set"])
         w.writerows([f["name"], f["match_id"], f["split"], f["t"], f["label_set_id"]] for f in frames)
     db.x("UPDATE training_run SET run_dir=? WHERE id=?", (str(run_dir), run_id))
-    spawn(run_id, run_dir, "w")
+    if not export:
+        spawn(run_id, run_dir, "w")
     return run_id
 
 
@@ -345,8 +361,172 @@ def evaluate_test(job, run_id):
     model = YOLO(os.path.join(run["run_dir"], "train", "weights", "best.pt"))
     job.progress(0.2, "Evaluating on test matches")
     res = model.val(data=os.path.join(run["run_dir"], "dataset", "data.yaml"), split="test",
-                    imgsz=params["imgsz"], batch=params["batch"], project=run["run_dir"], name="test",
-                    exist_ok=True, verbose=False)
+                    imgsz=params["imgsz"], batch=val_batch(params), project=run["run_dir"], name="test",
+                    exist_ok=True, verbose=False, workers=0)   # see val_batch: loaders would re-import app.py
     m = metrics_of(res, model.names)
     db.x("UPDATE training_run SET test_metrics=? WHERE id=?", (db.jdump(m), run_id))
     return f"Test mAP50 {m['overall']['map50']:.3f}"
+
+
+def val_batch(params):
+    """A run trained elsewhere may have planned a batch only a bigger GPU holds; scoring here never needs more.
+    Scoring runs inside the server, so it also uses workers=0: on Windows each data-loader process re-imports
+    app.py, whose db.init() marks running jobs failed, and the scoring hangs."""
+    return min(params["batch"], DEFAULTS["batch"])
+
+
+# ---------------------------------------------------------------- trained elsewhere
+
+def export_path(run):
+    return Path(run["run_dir"]) / f"kitman_run{run['id']}.zip"
+
+
+def train_command(run):
+    """The yolo command that trains an exported run as Kitman would, run next to its data.yaml."""
+    args = {k: v for k, v in train_args(json.loads(run["params"])).items() if v is not None}
+    return (f"yolo train data=data.yaml model={Path(run['base_model']).name} project=runs name=train "
+            + " ".join(f"{k}={v if isinstance(v, str) else json.dumps(v, separators=(',', ':'))}" for k, v in args.items()))
+
+
+def export_zip(job, run_id):
+    """kitman_run<N>.zip: the run's dataset in YOLO layout, a data.yaml that works wherever it is unpacked,
+    frames.csv and kitman_run.json (settings, lineage and the command to train it)."""
+    run = db.q1("SELECT * FROM training_run WHERE id=?", (run_id,))
+    ds, out = Path(run["run_dir"]) / "dataset", export_path(run)
+    files = [f for f in ds.rglob("*") if f.is_file() and f.name != "data.yaml" and f.suffix != ".cache"]   # Ultralytics' label caches hold this PC's paths
+    meta = {"kitman_run": run_id, "name": run["name"], "base_model": Path(run["base_model"]).name,
+            "params": json.loads(run["params"]), "label_set_ids": json.loads(run["label_set_ids"]),
+            "counts": json.loads(run["counts"]), "classes": json.loads(run["counts"])["classes"], "command": train_command(run),
+            "bring_back": "Zip the runs/train folder (or just runs/train/weights/best.pt) and import it on "
+                          f"Kitman's page for run {run_id}."}
+    part = out.with_suffix(".part")   # a half-written zip never looks ready
+    with zipfile.ZipFile(part, "w", zipfile.ZIP_STORED) as z:   # JPEGs don't compress further
+        z.writestr("data.yaml", data_yaml(meta["counts"]))
+        z.writestr("kitman_run.json", json.dumps(meta, indent=2))
+        z.write(Path(run["run_dir"]) / "frames.csv", "frames.csv")
+        for k, f in enumerate(files):
+            z.write(f, f.relative_to(ds).as_posix())
+            if job and k % 20 == 0:
+                job.progress((k + 1) / len(files), f"Packed {k + 1} of {len(files)} files")
+    part.replace(out)
+    return f"Zip ready: {out.name}, {out.stat().st_size / 2**20:.0f} MB"
+
+
+ZIP_HOURS = 12
+_zip_lock = threading.Lock()   # two downloads at once share one build
+
+
+def dataset_zip(run):
+    """The run's dataset zip: built on the first download, then the same file for ZIP_HOURS, after which
+    sweep_zips deletes it (a later download builds it again; the dataset never changes)."""
+    with _zip_lock:
+        p = export_path(run)
+        if not (p.exists() and time.time() - p.stat().st_mtime < ZIP_HOURS * 3600):
+            export_zip(None, run["id"])
+        return p
+
+
+def sweep_zips(root=None):
+    """Delete dataset zips older than ZIP_HOURS."""
+    with _zip_lock:
+        for p in Path(root or DATA / "runs").glob("run*/kitman_run*.zip"):
+            if time.time() - p.stat().st_mtime >= ZIP_HOURS * 3600:
+                try:
+                    p.unlink()
+                except OSError:   # still being downloaded (Windows holds it open); the next sweep gets it
+                    pass
+
+
+SAFE_NAME = re.compile(r"[\w\- ][\w.\- ]*")
+
+
+def pick_train_files(names):
+    """'/'-separated paths (zip members, or files under a chosen folder) -> {path: name inside run/train}.
+    The training folder is the one holding weights/best.pt, and there must be exactly one. Taken from it:
+    best/last weights and its own top-level files (results.csv, args.yaml, plots); nothing that could
+    land outside run/train."""
+    bests = [n for n in names if n == "weights/best.pt" or n.endswith("/weights/best.pt")]
+    if not bests:
+        raise ValueError("No weights/best.pt in it. Choose Ultralytics' training folder (runs/detect/train), "
+                         "or a zip of it.")
+    if len(bests) > 1:
+        raise ValueError(f"It holds {len(bests)} trainings ({', '.join(b[:-16] or '.' for b in bests)}). "
+                         "Choose or zip just one.")
+    root = bests[0][:-len("weights/best.pt")]
+    out = {}
+    for n in names:
+        rel = n[len(root):] if n.startswith(root) else None
+        if rel in ("weights/best.pt", "weights/last.pt") or (
+                rel and SAFE_NAME.fullmatch(rel) and rel.lower().endswith((".csv", ".yaml", ".png", ".jpg"))):
+            out[n] = rel
+    return out
+
+
+IMPORTED_FROM = {"pt": "best.pt only", "zip": "a training folder zip", "folder": "a training folder"}
+
+
+def import_model(job, run_id, source, kind):
+    """Bring back a model trained elsewhere for an exported run, then score it here on the run's own
+    dataset so its numbers compare with runs trained here. kind: pt or zip (an uploaded file, removed
+    afterwards) or folder (a folder on this computer, left as it is)."""
+    from ultralytics import YOLO
+    run = db.q1("SELECT * FROM training_run WHERE id=?", (run_id,))
+    if not run or run["status"] != "exported":   # e.g. imported twice before the first finished
+        raise ValueError(f"Run {run_id} isn't waiting for a model.")
+    rd = Path(run["run_dir"])
+    stage = rd / "import"
+    shutil.rmtree(stage, ignore_errors=True)
+    (stage / "weights").mkdir(parents=True)
+    try:
+        if kind == "pt":
+            shutil.copy2(source, stage / "weights" / "best.pt")
+        elif kind == "zip":
+            with zipfile.ZipFile(source) as z:   # read members as data, never extract paths
+                for src, rel in pick_train_files(z.namelist()).items():
+                    (stage / rel).write_bytes(z.read(src))
+        else:
+            root = Path(source)
+            names = [p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()]
+            for src, rel in pick_train_files(names).items():
+                shutil.copy2(root / src, stage / rel)
+        job.progress(0.1, "Checking the model's classes")
+        names = list(YOLO(str(stage / "weights" / "best.pt")).names.values())
+        want = json.loads(run["counts"])["classes"]
+        if names != want:
+            raise ValueError(f"The model's classes ({', '.join(names[:8])}) aren't this run's "
+                             f"({', '.join(want)}) in that order, so it wasn't trained on this export.")
+        shutil.rmtree(rd / "train", ignore_errors=True)   # left by an earlier import that failed while scoring
+        stage.rename(rd / "train")
+    except BaseException:
+        shutil.rmtree(stage, ignore_errors=True)
+        raise
+    finally:
+        if kind != "folder":
+            Path(source).unlink(missing_ok=True)
+
+    params = json.loads(run["params"])
+    # The run now shows, scores at and copies what it was really trained with (its args.yaml); the plan is kept.
+    base = run["base_model"]
+    planned = {"model": Path(base).name, **train_args(params)}
+    args_file = rd / "train" / "args.yaml"
+    if args_file.is_file():
+        import yaml
+        used = yaml.safe_load(args_file.read_text(encoding="utf-8")) or {}
+        params |= {k: used[k] for k in DEFAULTS if used.get(k) is not None}
+        base = Path(str(used.get("model") or base)).name
+    job.progress(0.2, "Scoring on this run's val frames")
+    model = YOLO(str(rd / "train" / "weights" / "best.pt"))
+    res = model.val(data=str(rd / "dataset" / "data.yaml"), split="val", imgsz=params["imgsz"],
+                    batch=val_batch(params), project=str(rd), name="val", exist_ok=True, verbose=False, workers=0)
+    m = metrics_of(res, model.names)
+    rows = epochs(run)
+    best = max(rows, key=lambda r: r.get("metrics/mAP50-95(B)", 0)) if rows else None   # best.pt's epoch
+    params["imported"] = {"from": IMPORTED_FROM[kind], "at": db.now(), "planned": planned, "remote": best and {
+        "epoch": int(best.get("epoch", 0)), "precision": best.get("metrics/precision(B)"),
+        "recall": best.get("metrics/recall(B)"), "map50": best.get("metrics/mAP50(B)"),
+        "map50_95": best.get("metrics/mAP50-95(B)")}}
+    db.x("UPDATE training_run SET status='done', metrics=?, params=?, base_model=?, finished=? WHERE id=?",
+         (db.jdump(m), db.jdump(params), base, db.now(), run_id))
+    db.x("INSERT INTO model (name, path, kind, training_run_id, created) VALUES (?,?,?,?,?)",
+         (f"Run {run_id}: {run['name']}", str(rd / "train" / "weights" / "best.pt"), "kitman", run_id, db.now()))
+    return f"Run {run_id} imported: val mAP50 {m['overall']['map50']:.3f}, scored here"

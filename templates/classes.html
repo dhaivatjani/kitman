@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Classes: Kitman{% endblock %}
+{% block body %}
+<h1>Classes</h1>
+<p class="lede">What the detector learns. Ids follow the A to Z order, the way Roboflow numbers them, so adding, merging or deleting a class renumbers every stored label. That runs in the background, after a backup of the database and labels to data/backups. A Roboflow export that still uses a merged name imports as the class it became; boxes of a deleted name are dropped.</p>
+
+<div data-live="classes-body">
+{% if pending %}<div class="flash" role="status">{{ pending.what }}: renumbering labels in the background. The list below already shows the result; other pages switch over when it's done.</div>
+{% elif busy %}<div class="flash error" role="status">Classes can't change while {{ busy }} Colours can.</div>{% endif %}
+
+<form method="post" class="row" style="margin-bottom:1rem">
+  <label>New class<input name="new" required pattern="[a-z0-9][a-z0-9_\-]{0,39}" placeholder="e.g. linesman" autocomplete="off"
+    title="Lowercase letters, digits, - or _"></label>
+  <button class="primary" name="action" value="add" {{ 'disabled' if busy }}>Add class</button>
+</form>
+
+<div id="classes">
+  <table class="class-table">
+    <thead><tr><th class="pick"><input type="checkbox" id="all" aria-label="Select all classes" {{ 'disabled' if busy }}></th><th>Colour</th><th>Class name</th><th class="r">Id</th></tr></thead>
+    <tbody>{% for c, col in shown %}
+      <tr><td class="pick"><input type="checkbox" class="pick-one" value="{{ c }}" aria-label="Select {{ c }}" {{ 'disabled' if busy }}></td>
+        <td><input type="color" class="dot" value="{{ col }}" data-class="{{ c }}" aria-label="Colour of {{ c }}"></td>
+        <td>{{ c }}</td><td class="r num muted">{{ loop.index0 }}</td></tr>
+    {% endfor %}</tbody>
+  </table>
+  <div class="row" style="margin-top:.75rem">
+    <button type="button" id="merge-open" disabled>Merge</button>
+    <button type="button" id="delete-open" disabled>Delete</button>
+    <span class="small muted" id="picked-note">{{ 'Wait for the current change to finish.' if busy else 'Tick classes to merge or delete them.' }}</span>
+  </div>
+</div>
+</div>
+
+<dialog id="merge-dlg" class="panel"><form method="post">
+    <h3 style="margin-top:0">Merge classes</h3>
+    <p class="small">Every box of the ticked classes becomes the class you pick. The others are removed.</p>
+    <label>Merge into<select name="target" id="merge-target"></select></label>
+    <div class="row" style="margin-top:1rem"><button class="primary" name="action" value="merge">Merge</button><button type="button" data-close>Cancel</button></div>
+  </form></dialog>
+
+<dialog id="delete-dlg" class="panel"><form method="post">
+    <h3 style="margin-top:0">Delete classes</h3>
+    <p class="small">This deletes <b id="delete-what"></b> and every box of them, in all label sets. It can only be undone from the backup.</p>
+    <label><span>Type <code id="delete-phrase"></code> to confirm</span><input name="confirm" id="delete-confirm" autocomplete="off"></label>
+    <div class="row" style="margin-top:1rem"><button class="primary" name="action" value="delete" id="delete-go" disabled>Delete</button><button type="button" data-close>Cancel</button></div>
+  </form></dialog>
+{% endblock %}
+{% block scripts %}
+<script>
+  // The table re-renders in place while the renumbering job runs, so every handler is delegated.
+  const boxes = () => [...document.querySelectorAll("#classes .pick-one")];
+  const picked = () => boxes().filter((b) => b.checked).map((b) => b.value);
+  function sync() {
+    const p = picked();
+    $("#merge-open").disabled = p.length < 2;
+    $("#delete-open").disabled = !p.length;
+    $("#all").checked = p.length === boxes().length;
+    $("#picked-note").textContent = p.length ? `${p.length} ticked` : "Tick classes to merge or delete them.";
+  }
+  function carry(dlg) {   // each dialog posts the ticked names with its own form
+    const form = $(`#${dlg} form`);
+    form.querySelectorAll("input[name=name]").forEach((i) => i.remove());
+    picked().forEach((n) => form.append(Object.assign(document.createElement("input"), { type: "hidden", name: "name", value: n })));
+  }
+  document.addEventListener("change", async (e) => {
+    const t = e.target;
+    if (t.id === "all") { boxes().forEach((b) => (b.checked = t.checked)); sync(); }
+    else if (t.classList.contains("pick-one")) sync();
+    else if (t.classList.contains("dot")) {   // colours save as soon as they're picked and repaint everything using --c-<name>
+      const body = new FormData();
+      body.append("action", "color"); body.append("class", t.dataset.class); body.append("color", t.value);
+      const r = await fetch(location.pathname, { method: "POST", body });
+      if (r.ok) document.documentElement.style.setProperty(`--c-${t.dataset.class}`, t.value);
+    }
+  });
+  document.addEventListener("click", (e) => {
+    const t = e.target;
+    if (t.id === "merge-open") {
+      carry("merge-dlg");
+      $("#merge-target").replaceChildren(...picked().map((n) => new Option(n, n)));
+      $("#merge-dlg").showModal();
+    } else if (t.id === "delete-open") {
+      carry("delete-dlg");
+      const phrase = picked().join(", ");   // the server checks the same text
+      $("#delete-what").textContent = phrase;
+      $("#delete-phrase").textContent = phrase;
+      $("#delete-confirm").value = "";
+      $("#delete-go").disabled = true;
+      $("#delete-dlg").showModal();
+    } else if (t.matches("[data-close]")) t.closest("dialog").close();
+  });
+  $("#delete-confirm").addEventListener("input", (e) =>
+    ($("#delete-go").disabled = e.target.value.trim() !== $("#delete-phrase").textContent));
+  // a second click must not send the change twice
+  document.addEventListener("submit", (e) =>
+    setTimeout(() => e.target.querySelectorAll("button").forEach((b) => (b.disabled = true))));
+</script>
+{% endblock %}

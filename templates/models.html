@@ -7,7 +7,7 @@
 
 <form class="panel" method="post" action="{{ url_for('model_add') }}" enctype="multipart/form-data">
   <h3 style="margin-top:0">Add a model</h3>
-  <p class="small muted" style="margin-top:0">Upload YOLO weights trained elsewhere. A model whose classes include player, goalkeeper, referee or ball is read by those names; a COCO model is read as person to player and sports ball to ball.</p>
+  <p class="small muted" style="margin-top:0">Upload YOLO weights trained elsewhere. A model whose classes include any on the Classes page ({{ CLASSES|join(', ') }}) is read by those names; a COCO model is read as person to player and sports ball to ball.</p>
   <div class="row">
     <label style="flex:1 1 18rem">Weights file (.pt)<input type="file" name="weights" accept=".pt" required></label>
     <label style="flex:1 1 14rem">Name<input name="name" placeholder="e.g. Colab run, YOLO11s 1280"></label>

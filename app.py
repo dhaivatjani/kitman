@@ -7,19 +7,22 @@ import csv
 import json
 import random
 import shutil
+import threading
+import time
 from pathlib import Path
 
 from flask import Flask, abort, flash, jsonify, redirect, render_template, request, send_file, url_for
 from werkzeug.utils import secure_filename
 
 import analysis
+import classes
 import db
 import jobs
 import labels
 import roboflow_io
 import sampling
 import training
-from config import (ANALYSIS_DIR, CLASSES, DATA, SAMPLING_DIR, SPLITS, SPLITS_CSV, VIDEO_EXTS, VIDEOS_DIR,
+from config import (ANALYSIS_DIR, DATA, SAMPLING_DIR, SPLITS, SPLITS_CSV, VIDEO_EXTS, VIDEOS_DIR,
                     roboflow_keys, save_roboflow_keys)
 
 app = Flask(__name__)
@@ -43,7 +46,7 @@ def globals_():
     active = db.q("SELECT * FROM job WHERE status IN ('queued','running') ORDER BY id")
     # an edited file gets a new URL, so browsers never keep running a stale cached copy
     asset = lambda f: url_for("static", filename=f, v=int((Path(app.static_folder) / f).stat().st_mtime))
-    return {"CLASSES": CLASSES, "active_jobs": active, "nav": request.endpoint, "asset": asset}
+    return {"CLASSES": classes.names(), "CLASS_COLORS": classes.colors(), "active_jobs": active, "nav": request.endpoint, "asset": asset}
 
 
 # ---------------------------------------------------------------- shared queries
@@ -204,7 +207,7 @@ def frame(fid):
     sets = db.q("""SELECT l.*, s.kind, s.source, s.created, s.batch_id FROM label l
                    JOIN label_set s ON s.id=l.label_set_id WHERE l.frame_id=? ORDER BY s.id DESC""", (fid,))
     for s in sets:
-        s["boxes"] = labels.read(s)
+        s["boxes"], s["counts"] = labels.read(s), json.loads(s["counts"])
     run = db.q1("SELECT * FROM sample_run WHERE id=?", (f["sample_run_id"],))
     batches = db.q("SELECT b.* FROM batch b JOIN batch_frame bf ON bf.batch_id=b.id WHERE bf.frame_id=?", (fid,))
     used_in = [r for r in db.q("SELECT id, name, label_set_ids FROM training_run")
@@ -461,9 +464,13 @@ def batch(bid):
     b = db.q1("SELECT * FROM batch WHERE id=?", (bid,)) or abort(404)
     sql, vals = frames_where({"batch": bid})
     rows = db.q(sql + " ORDER BY match_id, t", vals)
-    sets = db.q("""SELECT s.*, COUNT(l.frame_id) AS n, SUM(l.n_player) AS n_player, SUM(l.n_goalkeeper) AS n_goalkeeper,
-                   SUM(l.n_referee) AS n_referee, SUM(l.n_ball) AS n_ball FROM label_set s
-                   LEFT JOIN label l ON l.label_set_id=s.id WHERE s.batch_id=? GROUP BY s.id ORDER BY s.id""", (bid,))
+    sets = db.q("SELECT * FROM label_set WHERE batch_id=? ORDER BY id", (bid,))
+    for s in sets:   # boxes per class, by name
+        set_rows = db.q("SELECT counts FROM label WHERE label_set_id=?", (s["id"],))
+        s["n"], s["counts"] = len(set_rows), {}
+        for r in set_rows:
+            for c, n in json.loads(r["counts"]).items():
+                s["counts"][c] = s["counts"].get(c, 0) + n
     exports = sorted((DATA / "exports").glob(f"kitman_batch{bid}_*.zip")) if (DATA / "exports").exists() else []
     by_match = {}
     for r in rows:
@@ -640,11 +647,15 @@ def training_new():
         if copy_to and not Path(copy_to).is_dir():
             raise ValueError(f"The results folder “{copy_to}” doesn't exist. Choose it again.")
         base = training.base_weights(form.get("version", ""), form.get("size", ""))
+        export = form.get("export") == "1"
         rid = training.create(form.get("name", "").strip() or "Untitled run", base, params, ids,
-                              advanced, extra, copy_to)
+                              advanced, extra, "" if export else copy_to, export)
     except ValueError as e:
         flash(str(e), "error")
         return redirect(url_for("training_list"))
+    if export:
+        flash(f"Run {rid} exported. Download its dataset zip below.", "ok")
+        return redirect(url_for("training_run", rid=rid))
     flash("Training started.", "ok")
     return redirect(url_for("training_run", rid=rid))
 
@@ -664,8 +675,50 @@ def training_run(rid):
     if args_file.is_file():   # Ultralytics' own record of every setting the run used, defaults included
         import yaml
         used = yaml.safe_load(args_file.read_text(encoding="utf-8")) or {}
+    # Trained elsewhere: what the run planned (kept at import) against what its args.yaml says was used
+    planned = p.get("imported", {}).get("planned", {})
+    diffs = {k: (v, Path(str(used[k])).name if k == "model" else used[k]) for k, v in planned.items()
+             if k in used and (Path(str(used[k])).name if k == "model" else used[k]) != v}
     return render_template("run.html", run=run, sets=sets, model=model, used_by=used_by,
-                           passed=passed, used=used, copy_to=p.get("copy_to", ""), resumable=training.resumable(run))
+                           passed=passed, used=used, copy_to=p.get("copy_to", ""), resumable=training.resumable(run),
+                           imported=p.get("imported"), diffs=diffs,
+                           command=training.train_command(run) if run["status"] == "exported" else "")
+
+
+@app.route("/training/<int:rid>/zip")
+def training_zip(rid):
+    """Any run's dataset as a YOLO zip: exactly the frames and labels it trained on."""
+    run = db.q1("SELECT * FROM training_run WHERE id=?", (rid,)) or abort(404)
+    if not run["run_dir"] or not (Path(run["run_dir"]) / "dataset").is_dir():
+        flash(f"Run {rid} has no dataset folder to zip.", "error")
+        return redirect(url_for("training_run", rid=rid))
+    return send_file(training.dataset_zip(run), as_attachment=True)
+
+
+@app.post("/training/<int:rid>/import")
+def training_import(rid):
+    """A model trained elsewhere: an uploaded best.pt or training-folder zip, or a folder on this computer."""
+    run = db.q1("SELECT * FROM training_run WHERE id=?", (rid,)) or abort(404)
+    if run["status"] != "exported":
+        flash(f"Run {rid} isn't waiting for a model.", "error")
+        return redirect(url_for("training_run", rid=rid))
+    f, folder = request.files.get("weights"), request.form.get("folder", "").strip()
+    if folder:
+        if not Path(folder).is_dir():
+            flash(f"“{folder}” isn't a folder on this computer. Choose it again.", "error")
+            return redirect(url_for("training_run", rid=rid))
+        kind, source = "folder", folder
+    elif f and f.filename.lower().endswith((".pt", ".zip")):
+        kind = f.filename.lower().rsplit(".", 1)[1]
+        source = Path(run["run_dir"]) / f"upload.{kind}"
+        f.save(source)
+    else:
+        flash("Choose a best.pt, a zip of the training folder, or the folder itself.", "error")
+        return redirect(url_for("training_run", rid=rid))
+    jobs.submit("import", f"Import and score the model for run {rid}", training.import_model, rid, str(source), kind)
+    flash("Importing. Kitman checks the model, then scores it on this run's val frames; "
+          "reload this page when the job finishes.", "ok")
+    return redirect(url_for("training_run", rid=rid))
 
 
 @app.route("/api/training/<int:rid>")
@@ -712,6 +765,38 @@ def training_test(rid):
     jobs.submit("evaluate", f"Evaluate run {rid} on test", training.evaluate_test, rid)
     flash("Test evaluation queued. Use it once, at the end; don't tune on it.", "ok")
     return redirect(url_for("training_run", rid=rid))
+
+
+# ---------------------------------------------------------------- classes
+
+@app.route("/classes")
+def classes_page():
+    return render_template("classes.html", busy=classes.busy(), shown=classes.shown(), pending=classes.pending)
+
+
+@app.post("/classes")
+def classes_change():
+    act, picked = request.form.get("action"), request.form.getlist("name")
+    if act == "color":   # sent by the page's script, which only needs ok or the reason
+        try:
+            classes.recolor(request.form.get("class"), request.form.get("color"))
+        except ValueError as e:
+            return str(e), 400
+        return "", 204
+    try:
+        if act == "add":
+            classes.add(request.form.get("new", ""))
+        elif act == "merge":
+            classes.merge(picked, request.form.get("target", ""))
+        elif act == "delete":
+            if request.form.get("confirm", "").strip() != ", ".join(picked):
+                raise ValueError("The confirmation didn't match, so nothing was deleted.")
+            classes.delete(picked)
+        else:
+            abort(400)
+    except ValueError as e:
+        flash(str(e), "error")
+    return redirect(url_for("classes_page"))
 
 
 # ---------------------------------------------------------------- models, activity, settings
@@ -790,6 +875,15 @@ def settings():
 
 db.init()
 jobs.start()
+
+
+def sweep_zips_hourly():
+    while True:
+        training.sweep_zips()
+        time.sleep(3600)
+
+
+threading.Thread(target=sweep_zips_hourly, daemon=True, name="kitman-zip-sweep").start()
 
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5050, debug=False, threaded=True)

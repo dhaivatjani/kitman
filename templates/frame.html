@@ -32,7 +32,7 @@
     <h3>Batches</h3>
     {% for b in batches %}<p class="small" style="margin:.2rem 0"><a href="{{ url_for('batch', bid=b.id) }}">{{ b.name }}</a>, round {{ b.round }}</p>{% else %}<p class="small muted">Not in a batch</p>{% endfor %}
     <h3>Label sets</h3>
-    {% for s in sets %}<p class="small" style="margin:.2rem 0">{{ s.kind|capitalize }}, {{ s.source }}: <span class="num">{{ s.n_player }}</span> players, <span class="num">{{ s.n_goalkeeper }}</span> GK, <span class="num">{{ s.n_referee }}</span> ref, <span class="num">{{ s.n_ball }}</span> ball</p>{% else %}<p class="small muted">None</p>{% endfor %}
+    {% for s in sets %}<p class="small" style="margin:.2rem 0">{{ s.kind|capitalize }}, {{ s.source }}: {% for c, n in s.counts.items() %}<span class="num">{{ n }}</span> {{ c }}{{ ', ' if not loop.last }}{% endfor %}</p>{% else %}<p class="small muted">None</p>{% endfor %}
     <h3>Used in training</h3>
     {% for r in used_in %}<p class="small" style="margin:.2rem 0"><a href="{{ url_for('training_run', rid=r.id) }}">Run {{ r.id }}: {{ r.name }}</a></p>{% else %}<p class="small muted">Not yet</p>{% endfor %}
   </aside>

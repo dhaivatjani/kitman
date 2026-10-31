@@ -66,10 +66,10 @@
 <h2>Label sets</h2>
 {% if sets %}
 <table>
-  <thead><tr><th>Set</th><th>Kind</th><th>Source</th><th class="r">Frames</th><th class="r">Players</th><th class="r">Goalkeepers</th><th class="r">Referees</th><th class="r">Balls</th><th>Created</th><th></th></tr></thead>
+  <thead><tr><th>Set</th><th>Kind</th><th>Source</th><th class="r">Frames</th>{% for c in CLASSES %}<th class="r">{{ c }}</th>{% endfor %}<th>Created</th><th></th></tr></thead>
   <tbody>{% for s in sets %}
     <tr><td class="num">{{ s.id }}</td><td>{{ 'Pre-labels' if s.kind == 'prelabel' else 'Corrected' }}</td><td>{{ s.source }}</td>
-      <td class="r num">{{ s.n }}</td><td class="r num">{{ s.n_player or 0 }}</td><td class="r num">{{ s.n_goalkeeper or 0 }}</td><td class="r num">{{ s.n_referee or 0 }}</td><td class="r num">{{ s.n_ball or 0 }}</td>
+      <td class="r num">{{ s.n }}</td>{% for c in CLASSES %}<td class="r num">{{ s.counts.get(c, 0) }}</td>{% endfor %}
       <td class="small muted">{{ s.created|replace('T', ' ') }}</td>
       <td class="r">{% if s.id in trained %}<span class="small muted" title="A training run used this set">Used in training</span>{% else %}
         <form method="post" action="{{ url_for('batch_label_delete', bid=b.id, sid=s.id) }}"

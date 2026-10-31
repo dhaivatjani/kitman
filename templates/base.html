@@ -8,12 +8,13 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Big+Shoulders+Display:wght@600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ asset('kitman.css') }}">
+<style>:root { {% for c, col in CLASS_COLORS %}--c-{{ c }}: {{ col }}; {% endfor %}}</style>
 </head>
 <body>
 <aside class="rail">
   <a class="brand" href="{{ url_for('overview') }}"><b>Kitman</b><span>FC Mobile detector loop</span></a>
   <nav aria-label="Main">
-    {% set items = [('overview','Squad sheet'),('videos','Videos'),('sampling_page','Sampling'),('frames','Frames'),('batches','Batches'),('training_list','Training'),('models','Models'),('activity','Activity'),('settings','Settings')] %}
+    {% set items = [('overview','Squad sheet'),('classes_page','Classes'),('videos','Videos'),('sampling_page','Sampling'),('frames','Frames'),('batches','Batches'),('training_list','Training'),('models','Models'),('activity','Activity'),('settings','Settings')] %}
     {% for ep, label in items %}
       <a href="{{ url_for(ep) }}" {% if nav == ep or (ep == 'overview' and nav == 'match') or (ep == 'frames' and nav == 'frame') or (ep == 'batches' and nav == 'batch') or (ep == 'training_list' and nav == 'training_run') %}aria-current="page"{% endif %}>{{ label }}</a>
     {% endfor %}

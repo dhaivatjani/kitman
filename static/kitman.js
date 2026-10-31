@@ -214,6 +214,48 @@ function followRun(id, status) {
   tick();
 }
 
+// ---------- exported run: copy the train command; bring a model back (file, dropped file, or a folder here)
+function exportedRun() {
+  for (const b of document.querySelectorAll(".cmd-copy")) {
+    b.addEventListener("click", async () => {
+      const pre = $("#" + b.dataset.copy);
+      try { await navigator.clipboard.writeText(pre.textContent.trim()); b.textContent = "Copied"; }
+      catch {   // clipboard API blocked: select the command so the old copy, or Ctrl+C, still works
+        getSelection().selectAllChildren(pre);
+        b.textContent = document.execCommand("copy") ? "Copied" : "Press Ctrl+C";
+      }
+      setTimeout(() => { b.textContent = "Copy"; }, 2000);
+    });
+  }
+  for (const drop of document.querySelectorAll(".drop")) {
+    const input = $("input", drop), text = $("span", drop), go = $("button", drop.parentElement);
+    const empty = text.textContent;
+    const show = () => {
+      const f = input.files[0], ok = f && f.name.toLowerCase().endsWith(input.accept);
+      drop.classList.toggle("chosen", !!ok);
+      text.textContent = !f ? empty : ok ? `${f.name}, ${(f.size / 2 ** 20).toFixed(f.size < 2 ** 20 ? 2 : 0)} MB` : `${f.name} isn't a ${input.accept} file`;
+      go.disabled = !ok;
+    };
+    input.addEventListener("change", show);
+    drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+    drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+    drop.addEventListener("drop", (e) => { e.preventDefault(); drop.classList.remove("over"); input.files = e.dataTransfer.files; show(); });
+    go.form.addEventListener("submit", () => { go.disabled = true; go.textContent = "Uploading…"; });
+  }
+  const btn = $("#pick-import"), note = $("#pick-import-note"), form = $("#import-folder");
+  if (!btn) return;
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    note.textContent = "A folder window has opened. It may be behind this one.";
+    try {
+      const { folder } = await (await fetch("/videos/pick?title=" + encodeURIComponent("Choose the training folder (runs/train)"), { method: "POST" })).json();
+      if (folder) { form.folder.value = folder; note.textContent = `Importing ${folder}`; form.submit(); return; }
+      note.textContent = "No folder chosen.";
+    } catch { note.textContent = "Couldn't open the folder window. Check the Kitman server is running."; }
+    btn.disabled = false;
+  });
+}
+
 // ---------- batch page: the Roboflow workspace and project (remembered per batch) and the version to pull
 function roboflowTarget() {
   const box = $("#rf-target");

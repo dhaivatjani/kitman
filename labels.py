@@ -7,12 +7,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+import classes
 import db
-from config import CLASSES, DATA, SAMPLING_DIR
+from config import DATA, SAMPLING_DIR
 from camera_benchmark import MIN_HULL_FRAC, UI_TOP_FRAC, on_pitch, pitch_mask  # copy of benchmark/camera_benchmark.py: same on-pitch rule as the EDA
 
 PERSON_CONF, BALL_CONF = 0.30, 0.15
-PLAYER, BALL = CLASSES.index("player"), CLASSES.index("ball")
 RF_SUFFIX = re.compile(r"_(jpg|jpeg|png)\.rf\.[0-9a-f]+$", re.I)
 
 
@@ -45,20 +45,24 @@ def parse(text):
 
 
 def write(label_set_id, frame, boxes):
-    """Store one frame's boxes (class ids in CLASSES order) and its label row."""
+    """Store one frame's boxes (class ids in the Classes page's order) and its label row."""
     path = label_dir(label_set_id) / (Path(frame["name"]).stem + ".txt")
+    write_file(path, boxes)
+    return (label_set_id, frame["id"], str(path.relative_to(DATA)), db.jdump(counts(boxes, classes.names())))
+
+
+def write_file(path, boxes):
     path.write_text("".join(f"{c} {x:.6f} {y:.6f} {w:.6f} {h:.6f}\n" for c, x, y, w, h in boxes),
                     encoding="utf-8")
-    n = [sum(b[0] == CLASSES.index(c) for b in boxes) for c in COUNT_COLUMNS]
-    return (label_set_id, frame["id"], str(path.relative_to(DATA)), *n)
 
 
-COUNT_COLUMNS = ["player", "goalkeeper", "referee", "ball"]   # label table's n_* columns, matched by name, not id
+def counts(boxes, names):
+    """{class name: boxes}, every class listed so an empty one shows as 0."""
+    return {n: sum(b[0] == i for b in boxes) for i, n in enumerate(names)}
 
 
 def save_rows(rows):
-    db.xmany("INSERT OR REPLACE INTO label (label_set_id, frame_id, path, "
-             + ", ".join(f"n_{c}" for c in COUNT_COLUMNS) + ") VALUES (?,?,?,?,?,?,?)", rows)
+    db.xmany("INSERT OR REPLACE INTO label (label_set_id, frame_id, path, counts) VALUES (?,?,?,?)", rows)
 
 
 def read(label_row):
@@ -80,7 +84,9 @@ def prelabel(job, batch_id, model_id):
     if model["training_run_id"]:
         imgsz = json.loads(db.q1("SELECT params FROM training_run WHERE id=?", (model["training_run_id"],))["params"])["imgsz"]
     yolo = YOLO(model["path"])
-    to_ours = class_map(yolo.names)   # None = a COCO model, read person/sports ball
+    live = classes.names()
+    to_ours = class_map(yolo.names, live)   # None = a COCO model, read person/sports ball
+    ball = live.index("ball") if "ball" in live else None
 
     ls = db.x("INSERT INTO label_set (batch_id, kind, source, model_id, created) VALUES (?,?,?,?,?)",
               (batch_id, "prelabel", model["name"], model_id, db.now()))
@@ -92,14 +98,14 @@ def prelabel(job, batch_id, model_id):
         H, W = img.shape[:2]
         if to_ours is None:
             res = yolo.predict(img, imgsz=imgsz, conf=BALL_CONF, classes=[0, 32], verbose=False)[0]
-            boxes = coco_boxes(img, res)
+            boxes = coco_boxes(img, res, live)
         else:
             res = yolo.predict(img, imgsz=imgsz, conf=BALL_CONF, verbose=False)[0]
             boxes = []
             for (x1, y1, x2, y2), c, p in zip(res.boxes.xyxy.cpu().numpy(), res.boxes.cls.cpu().numpy().astype(int),
                                               res.boxes.conf.cpu().numpy()):
                 ours = to_ours.get(c)
-                if ours is not None and p >= (BALL_CONF if ours == BALL else PERSON_CONF):
+                if ours is not None and p >= (BALL_CONF if ours == ball else PERSON_CONF):
                     boxes.append(xyxy_to_yolo(ours, x1, y1, x2, y2, W, H))
         rows.append(write(ls, f, boxes))
         if k % 10 == 0:
@@ -109,21 +115,26 @@ def prelabel(job, batch_id, model_id):
     return f"Pre-labelled {len(rows)} frames with {model['name']}"
 
 
-def class_map(names):
-    """How to read a model's classes: {its id: our id} when it knows any of our classes by name,
-    None when it's a COCO model (person -> player, sports ball -> ball). Raises if neither."""
-    ours = {i: CLASSES.index(n) for i, n in names.items() if n in CLASSES}
+def class_map(names, live=None, alias=None):
+    """How to read a model's classes: {its id: our id} when it knows any of our classes by name
+    (a merged name reads as the class it became, a deleted one is dropped), None when it's a COCO
+    model (person -> player, sports ball -> ball). Raises if neither."""
+    live = classes.names() if live is None else live
+    ours, _ = classes.read_names(names, live, alias)
+    ours = {i: c for i, c in ours.items() if c is not None}
     if ours:
         return ours
     if "person" in names.values():
         return None
     raise ValueError(f"The model's classes ({', '.join(list(names.values())[:8])}) include neither "
-                     f"{', '.join(CLASSES)} nor COCO's person, so it can't pre-label.")
+                     f"{', '.join(live)} nor COCO's person, so it can't pre-label.")
 
 
-def coco_boxes(img, res):
-    """COCO person -> player, sports ball -> ball, kept only when on the pitch.
+def coco_boxes(img, res, live):
+    """COCO person -> player, sports ball -> ball (when those classes exist), kept only when on the pitch.
     Frames without a pitch (replays, menus from fixed-interval sampling) keep every box."""
+    player = live.index("player") if "player" in live else None
+    ball = live.index("ball") if "ball" in live else None
     H, W = img.shape[:2]
     _, pitch, _, hull_frac = pitch_mask(img)
     has_pitch = hull_frac >= MIN_HULL_FRAC
@@ -133,10 +144,10 @@ def coco_boxes(img, res):
                                       res.boxes.conf.cpu().numpy()):
         if has_pitch and y2 < H * UI_TOP_FRAC:
             continue
-        if c == 0 and p >= PERSON_CONF and (not has_pitch or on_pitch(pitch, (x1 + x2) / 2, y2)):
-            boxes.append(xyxy_to_yolo(PLAYER, x1, y1, x2, y2, W, H))
-        elif c == 32 and p >= BALL_CONF and (not has_pitch or on_pitch(inner, (x1 + x2) / 2, (y1 + y2) / 2)):
-            boxes.append(xyxy_to_yolo(BALL, x1, y1, x2, y2, W, H))
+        if c == 0 and player is not None and p >= PERSON_CONF and (not has_pitch or on_pitch(pitch, (x1 + x2) / 2, y2)):
+            boxes.append(xyxy_to_yolo(player, x1, y1, x2, y2, W, H))
+        elif c == 32 and ball is not None and p >= BALL_CONF and (not has_pitch or on_pitch(inner, (x1 + x2) / 2, (y1 + y2) / 2)):
+            boxes.append(xyxy_to_yolo(ball, x1, y1, x2, y2, W, H))
     return boxes
 
 

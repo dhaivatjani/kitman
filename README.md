@@ -8,7 +8,10 @@ batches and label sets that run used, and the exact match and second of every fr
 add videos → sample frames → batch → pre-label → Roboflow → corrections back → train → next round's pre-labels
 ```
 
-Detector classes (fixed): `ball`, `goalkeeper`, `player`, `referee`.
+Detector classes start as `ball`, `goalkeeper`, `player`, `referee` and are managed on the **Classes** page
+(add, merge, delete, colour). Ids are the A to Z order; every change renumbers the stored labels after a backup
+to `data/backups/`. Merged names are remembered (a Roboflow export still using them imports as the class they
+became) and deleted names are dropped on import.
 
 ---
 
@@ -175,8 +178,8 @@ You can delete label sets you don't want from the batch page, except ones a trai
 
 ### 5. Correct in Roboflow
 
-Fix the boxes in Roboflow. The project's classes **must** be named `ball`, `goalkeeper`, `player`, `referee`.
-Kitman uses Roboflow's alphabetical ids for them: 0 ball, 1 goalkeeper, 2 player, 3 referee.
+Fix the boxes in Roboflow. The project's classes **must** use the names on the Classes page (or names merged or deleted there).
+Kitman uses Roboflow's alphabetical ids for them.
 
 ### 6. Bring corrections back (batch page)
 
@@ -286,7 +289,8 @@ Test metrics come from a separate evaluation on the test matches (step 9).
 | File | Role |
 |---|---|
 | `app.py` | Flask routes and pages |
-| `config.py` | paths, classes, splits, frame size, and the local config (Roboflow keys) |
+| `classes.py` | the class list, colours, aliases, and renumbering labels on add / merge / delete |
+| `config.py` | paths, splits, frame size, and the local config (Roboflow keys) |
 | `db.py` | SQLite schema and query helpers |
 | `jobs.py` | the background job queue |
 | `analysis.py` | per-video timestamps and live-play analysis (wraps `video_eda.py`) |
@@ -311,7 +315,7 @@ Test metrics come from a separate evaluation on the test matches (step 9).
 - **"Skipped … still being prepared".** That video's analysis hasn't finished yet. Custom sampling needs the full
   analysis; Fixed interval only needs the timestamps.
 - **Send to Roboflow fails.** Make sure that workspace has a key under **Settings**, and that the project's
-  classes are named exactly `ball`, `goalkeeper`, `player`, `referee`.
+  classes use the names on the **Classes** page.
 - **A training run shows "running" but nothing happens.** The process probably died (the PC slept or was
   restarted). If the run saved a `last.pt`, it can be resumed.
 - **After upgrading Ultralytics,** restart Kitman.

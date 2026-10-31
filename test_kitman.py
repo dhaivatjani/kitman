@@ -23,15 +23,25 @@ for bad in ("0 0.5 0.5 0.1", "0 1.5 0.5 0.1 0.1"):
         pass
 
 # Uploaded models: read by our class names, else as COCO, else refused
-from config import CLASSES
-assert CLASSES == ["ball", "goalkeeper", "player", "referee"]   # Roboflow's alphabetical ids
-assert class_map({0: "player", 1: "ball"}) == {0: 2, 1: 0}
-assert class_map({0: "person", 32: "sports ball"}) is None
+LIVE = ["ball", "goalkeeper", "player", "referee"]   # Roboflow's alphabetical ids
+assert class_map({0: "player", 1: "ball"}, LIVE, {}) == {0: 2, 1: 0}
+assert class_map({0: "person", 32: "sports ball"}, LIVE, {}) is None
 try:
-    class_map({0: "car"})
+    class_map({0: "car"}, LIVE, {})
     raise AssertionError("car-only model accepted")
 except ValueError:
     pass
+# after merging goalkeeper into player and deleting referee: old names still read, deleted ones drop
+import classes
+after = ["ball", "player"]
+alias = {"goalkeeper": "player", "referee": None}
+assert classes.read_names({0: "ball", 1: "goalkeeper", 2: "player", 3: "referee"}, after, alias) == ({0: 0, 1: 1, 2: 1, 3: None}, [])
+assert classes.read_names({0: "car"}, after, alias) == ({}, ["car"])
+assert class_map({0: "goalkeeper", 1: "referee"}, after, alias) == {0: 1}
+# a Roboflow project holding only player and referee numbers them 0, 1; they still land on 2, 3
+assert classes.read_names({0: "player", 1: "referee"}, LIVE, {})[0] == {0: 2, 1: 3}
+assert classes.renumber(LIVE, after, {"ball": "ball", "goalkeeper": "player", "player": "player", "referee": None}) == {0: 0, 1: 1, 2: 1}
+assert classes.renumber(LIVE, sorted(LIVE + ["coach"]), {n: n for n in LIVE}) == {0: 0, 1: 2, 2: 3, 3: 4}
 
 # Snapping to real frames on a variable-rate clock, with the freeze limit
 pts = np.array([0.0, 0.03, 0.07, 0.10, 1.40, 1.43])          # freeze between 0.10 and 1.40
@@ -197,8 +207,64 @@ with tempfile.TemporaryDirectory() as tmp:
             raise AssertionError("paused a run that isn't training")
         except ValueError:
             pass
+
+        # Export: a zip that trains anywhere (data.yaml with no absolute path), with lineage and the command
+        import json
+        import zipfile
+        exp = Path(tmp) / "run12"
+        for sub in ("train/images", "train/labels"):
+            (exp / "dataset" / sub).mkdir(parents=True)
+        (exp / "dataset" / "train/images/a.jpg").write_bytes(b"jpg")
+        (exp / "dataset" / "train/labels/a.txt").write_text("0 0.5 0.5 0.1 0.1\n")
+        (exp / "dataset" / "data.yaml").write_text("path: C:/somewhere\n")
+        (exp / "frames.csv").write_text("frame\na.jpg\n")
+        params = training.DEFAULTS | {"advanced": {"workers": 2, "device": ""}, "extra": {"fraction": 0.5}}
+        db.x("INSERT INTO training_run (id, name, base_model, params, label_set_ids, counts, status, run_dir, created) "
+             "VALUES (12,'t','yolo26m.pt',?,'[3]',?,'exported',?,?)",
+             (db.jdump(params), db.jdump({"train": 1, "val": 0, "test": 0, "val_from_train": True, "classes": ["ball", "player"]}), str(exp), db.now()))
+        training.export_zip(type("J", (), {"progress": lambda *a: None})(), 12)
+        with zipfile.ZipFile(exp / "kitman_run12.zip") as z:
+            assert set(z.namelist()) == {"data.yaml", "kitman_run.json", "frames.csv", "train/images/a.jpg", "train/labels/a.txt"}
+            y = z.read("data.yaml").decode()
+            assert "path:" not in y and "val: train/images" in y and "test:" not in y and "0: ball\n  1: player" in y   # the run's own classes
+            cmd = json.loads(z.read("kitman_run.json"))["command"]
+        assert cmd.startswith("yolo train data=data.yaml model=yolo26m.pt project=runs name=train imgsz=1280")
+        assert "fraction=0.5" in cmd and "device" not in cmd   # blank device: let the remote machine pick
+        assert training.resumable(db.q1("SELECT * FROM training_run WHERE id=12")) is False
+
+        # Download zip: the same file within 12 hours, a fresh one after, and the sweep deletes old ones
+        import os
+        import time
+        run12 = db.q1("SELECT * FROM training_run WHERE id=12")
+        zp = training.dataset_zip(run12)
+        old = time.time() - 11 * 3600
+        os.utime(zp, (old, old))
+        assert training.dataset_zip(run12).stat().st_mtime == old   # reused, not rebuilt
+        old = time.time() - 13 * 3600
+        os.utime(zp, (old, old))
+        assert training.dataset_zip(run12).stat().st_mtime > old    # expired: rebuilt
+        training.sweep_zips(tmp)
+        assert zp.exists()                                          # fresh zips stay
+        os.utime(zp, (old, old))
+        training.sweep_zips(tmp)
+        assert not zp.exists()
     finally:
         db.DB_PATH = real_db
+
+# Import: the one training folder holding weights/best.pt, and nothing that could land outside run/train
+pick = training.pick_train_files
+assert pick(["weights/best.pt", "weights/last.pt", "results.csv", "args.yaml", "events.out"]) == {
+    "weights/best.pt": "weights/best.pt", "weights/last.pt": "weights/last.pt",
+    "results.csv": "results.csv", "args.yaml": "args.yaml"}
+got = pick(["runs/detect/train/weights/best.pt", "runs/detect/train/results.csv", "runs/detect/train/val/x.png",
+            "runs/detect/train/..\\..\\evil.csv", "other/results.csv", "runs/detect/train/weights/epoch5.pt"])
+assert got == {"runs/detect/train/weights/best.pt": "weights/best.pt", "runs/detect/train/results.csv": "results.csv"}, got
+for bad in (["results.csv"], ["a/weights/best.pt", "b/weights/best.pt"]):
+    try:
+        pick(bad)
+        raise AssertionError(f"accepted {bad}")
+    except ValueError:
+        pass
 
 # Batches spread round-robin across matches
 c = [{"id": i, "match_id": m} for i, m in enumerate(["M01"] * 10 + ["M02"] * 10 + ["M03"] * 2)]
@@ -251,10 +317,9 @@ try:
     assert sorted(fp.sent) == sorted(str(roboflow_io.SAMPLING_DIR / f["path"]) for f in fake_frames) and fj.last == 1
     assert fp.ann == [None] * 30
     # the chosen label set goes up; a frame with no boxes in it goes as an image only
-    roboflow_io.db.q = lambda sql, args: [{"frame_id": 2, "path": "labels/9/f2.txt", "n_ball": 1, "n_goalkeeper": 0,
-                                           "n_player": 0, "n_referee": 0},
-                                          {"frame_id": 4, "path": "labels/9/f4.txt", "n_ball": 0, "n_goalkeeper": 0,
-                                           "n_player": 0, "n_referee": 0}] if args == (9,) else []
+    roboflow_io.db.q = lambda sql, args=(): [{"frame_id": 2, "path": "labels/9/f2.txt", "counts": '{"ball":1,"player":0}'},
+                                             {"frame_id": 4, "path": "labels/9/f4.txt", "counts": '{"ball":0}'}] \
+        if args == (9,) else []
     fp = FakeProject()
     roboflow_io.project = lambda *a: fp
     roboflow_io.api_upload(FakeJob(), 1, 9)
@@ -290,5 +355,83 @@ try:
     raise AssertionError("upload without a project")
 except ValueError:
     pass
+
+# Classes page: add, merge and delete renumber the stored labels and remember old names
+import json
+
+import labels
+with tempfile.TemporaryDirectory() as tmp:
+    real = db.DB_PATH, classes.DATA, classes.DB_PATH, labels.DATA, classes.jobs.submit
+    db.DB_PATH = classes.DB_PATH = Path(tmp) / "t.db"
+    classes.DATA = labels.DATA = Path(tmp)
+    queued = []   # the job queue, run by hand below; most checks run each change straight away
+    classes.jobs.submit = lambda kind, title, fn, *a: fn(FakeJob(), *a)
+    try:
+        db.init()
+        db.x("INSERT INTO batch (id, name, round, status, created) VALUES (1,'b',1,'new','x')")
+        db.x("INSERT INTO label_set (id, batch_id, kind, source, created) VALUES (1,1,'corrected','t','x')")
+        db.x("INSERT INTO match (id, file, path, split, status, created) VALUES ('M01','f','p','train','ready','x')")
+        db.x("INSERT INTO sample_run (id, match_id, mode, params, status, created) VALUES (1,'M01','fixed','{}','done','x')")
+        db.x("INSERT INTO frame (id, name, match_id, sample_run_id, path, t, frame_idx) VALUES (1,'a.jpg','M01',1,'a.jpg',0,0)")
+        # one box per class: ball 0, goalkeeper 1, player 2, referee 3
+        labels.save_rows([labels.write(1, {"id": 1, "name": "a.jpg"}, [(c, .5, .5, .1, .1) for c in range(4)])])
+        ids = lambda: [b[0] for b in labels.read(db.q1("SELECT * FROM label"))]
+        cnt = lambda: json.loads(db.q1("SELECT counts FROM label")["counts"])
+        classes.add("coach")                                   # ball 0, coach 1, goalkeeper 2, player 3, referee 4
+        assert classes.names() == ["ball", "coach", "goalkeeper", "player", "referee"] and ids() == [0, 2, 3, 4]
+        classes.merge(["goalkeeper", "player"], "player")      # ball 0, coach 1, player 2, referee 3
+        assert ids() == [0, 2, 2, 3] and cnt() == {"ball": 1, "coach": 0, "player": 2, "referee": 1}
+        classes.delete(["referee"])
+        assert ids() == [0, 2, 2] and classes.aliases() == {"goalkeeper": "player", "referee": None}
+        classes.merge(["player", "coach"], "coach")             # goalkeeper now also reads as coach
+        assert classes.aliases()["goalkeeper"] == "coach" and ids() == [0, 1, 1]
+        classes.add("goalkeeper")                               # a name comes back to life
+        assert "goalkeeper" not in classes.aliases() and ids() == [0, 1, 1]
+        for bad in (lambda: classes.add("Bad Name"), lambda: classes.delete(classes.names()), lambda: classes.merge(["ball"], "ball")):
+            try:
+                bad()
+                raise AssertionError("bad class change accepted")
+            except ValueError:
+                pass
+        assert len(list((Path(tmp) / "backups").iterdir())) == 5   # one backup per change
+        # the same add sent twice at once (a double click) renumbers once; the second is refused
+        import threading as _th
+        errs = []
+        def twice():
+            try:
+                classes.add("aaa")
+            except ValueError as e:
+                errs.append(e)
+        ts = [_th.Thread(target=twice) for _ in range(2)]
+        [t.start() for t in ts]
+        [t.join() for t in ts]
+        assert len(errs) == 1 and ids() == [1, 2, 2] and classes.names()[0] == "aaa"
+        # queued: the Classes page shows the result at once; the real list and files switch when the job runs
+        classes.jobs.submit = lambda kind, title, fn, *a: queued.append((fn, a))
+        classes.delete(["aaa"])
+        assert [n for n, _ in classes.shown()] == ["ball", "coach", "goalkeeper"] and classes.names()[0] == "aaa"
+        try:
+            classes.add("linesman")   # one change at a time
+            raise AssertionError("second change queued behind a pending one")
+        except ValueError:
+            pass
+        try:
+            training.create("x", "yolo26n.pt", {}, [1])
+            raise AssertionError("training started mid-renumber")
+        except ValueError as e:
+            assert "renumbered" in str(e)
+        fn, a = queued.pop()
+        fn(FakeJob(), *a)
+        assert classes.pending is None and classes.names() == ["ball", "coach", "goalkeeper"] and ids() == [0, 1, 1]
+        db.x("INSERT INTO training_run (name, base_model, params, label_set_ids, status, created) "
+             "VALUES ('r','m','{}','[]','running','x')")
+        try:
+            classes.add("linesman")
+            raise AssertionError("changed classes under a running training run")
+        except ValueError:
+            pass
+        assert classes.pending is None
+    finally:
+        db.DB_PATH, classes.DATA, classes.DB_PATH, labels.DATA, classes.jobs.submit = real
 
 print("All Kitman checks passed")

@@ -66,7 +66,11 @@
     <span class="small" id="copy-to-note">{{ pre.copy_to or 'Optional. Kitman always keeps its own copy in kitman/data/runs.' }}</span>
     <button type="button" class="link-btn" id="clear-copy-to" {{ '' if pre.copy_to else 'hidden' }}>Don't copy</button>
   </div>
-  <div class="row" style="margin-top:1rem"><button class="primary" {{ 'disabled' if not batches }}>Start training</button></div>
+  <div class="row" style="margin-top:1rem;align-items:center">
+    <button class="primary" {{ 'disabled' if not batches }}>Start training</button>
+    <button name="export" value="1" {{ 'disabled' if not batches }}>Export to train elsewhere</button>
+    <span class="hint">Builds the same dataset as a run, as a YOLO zip with data.yaml. Bring the model back on the run's page.</span>
+  </div>
 </form>
 
 <div data-live="runs">

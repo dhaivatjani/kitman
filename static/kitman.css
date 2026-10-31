@@ -15,10 +15,7 @@
   --train: #15233B;
   --val: #1F7A8C;
   --test: #A86A12;
-  --c-player: #E63946;
-  --c-goalkeeper: #0096C7;
-  --c-referee: #F2C200;
-  --c-ball: #E0218A;
+  /* class colours (--c-<name>) come from the Classes page, set in base.html */
   --ok: #2E6B3F;
   --warn: #A86A12;
   --display: "Big Shoulders Display", "Arial Narrow", sans-serif;
@@ -150,6 +147,7 @@ td.actions button { padding: 0.4rem 0.7rem; font-size: 0.85rem; }
 .status.corrected::before, .status.done::before, .status.ready::before { background: var(--ok); }
 .status.running::before, .status.queued::before { background: var(--val); animation: pulse 1.2s infinite; }
 .status.failed::before { background: var(--red); }
+.status.exported::before { background: var(--test); }
 .status.stopped::before, .status.paused::before { background: var(--ink-2); }
 @keyframes pulse { 50% { opacity: 0.3; } }
 
@@ -183,6 +181,29 @@ fieldset { border: 0; padding: 0; margin: 0; }
 .modes > form > :last-child { margin-top: auto; }   /* side-by-side panels keep their buttons on one line */
 .modes h3 { margin: 0; }
 .modes p { margin: 0; color: var(--ink-2); font-size: 0.9rem; }
+.modes.import-opts { grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 1.5rem; }
+.import-opts > form + form { border-left: 1px solid var(--line-2); padding-left: 1.5rem; }
+.import-opts .pick { display: flex; flex-direction: column; align-items: flex-start; gap: 0.6rem; }
+.import-opts .pick p:empty { display: none; }
+ol.steps > li > p { max-width: 46rem; }
+
+/* Exported run: the train command, set like the training log, and file drop targets */
+ol.steps .cmd-lead { margin: 1.25rem 0 0.4rem; color: var(--ink); font-weight: 700; font-size: 0.9rem; }
+.cmd { position: relative; background: var(--ink); border-radius: var(--r-md); margin-bottom: 0.6rem; }
+.cmd pre { margin: 0; padding: 0.9rem 6.5rem 0.9rem 1rem; color: #E8ECF2; font: 0.86rem/1.6 Consolas, ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: break-word; }
+@media (max-width: 900px) { .cmd pre { padding: 3rem 1rem 0.9rem; } }   /* Copy sits above the command, not beside it */
+.cmd-copy { position: absolute; top: 0.55rem; right: 0.55rem; background: transparent; color: #fff; border-color: rgb(255 255 255 / 0.4); padding: 0.45rem 0.8rem; font-size: 0.85rem; }
+.cmd-copy:hover { background: #fff; color: var(--ink); }
+label.drop {
+  position: relative; flex-direction: row; align-items: center; width: 100%; min-height: 3.1rem; padding: 0.55rem 0.8rem;
+  border: 1px dashed #A9B1BA; border-radius: var(--r-sm); background: #fff; color: var(--ink-2); font-weight: 400; cursor: pointer; overflow-wrap: anywhere;
+}
+label.drop:hover, label.drop.over { border-color: var(--ink); color: var(--ink); }
+label.drop.over { background: #F5F6F2; }
+label.drop.chosen { border-style: solid; border-color: var(--ok); color: var(--ink); }
+label.drop:focus-within { outline: 3px solid var(--red); outline-offset: 2px; }
+label.drop input { position: absolute; inset: 0; opacity: 0; width: 1px; height: 1px; }
+@media (max-width: 900px) { .import-opts > form + form { border-left: 0; padding-left: 0; border-top: 1px solid var(--line-2); padding-top: 1rem; } }
 
 /* ---------- flash + jobs dock */
 .flash { padding: 0.65rem 0.9rem; border-radius: var(--r-sm); margin-bottom: 1rem; border: 1px solid var(--line); background: var(--sheet); display: flex; gap: 0.6rem; align-items: baseline; }
@@ -212,8 +233,8 @@ fieldset { border: 0; padding: 0; margin: 0; }
 .stage img, .stage canvas { display: block; width: 100%; height: auto; }
 .stage canvas { position: absolute; inset: 0; height: 100%; }
 dl.kv { display: grid; grid-template-columns: auto 1fr; gap: 0.3rem 1rem; margin: 0; font-size: 0.92rem; }
-dl.kv dt { color: var(--ink-2); }
-dl.kv dd { margin: 0; }
+dl.kv dt { color: var(--ink-2); white-space: nowrap; }
+dl.kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }   /* long run folders wrap instead of squeezing the labels */
 .classes { display: flex; flex-wrap: wrap; gap: 0.4rem 0.9rem; margin: 0.5rem 0; }
 .swatch { display: inline-block; width: 0.75rem; height: 0.75rem; border-radius: 2px; vertical-align: -1px; }
 
@@ -251,3 +272,13 @@ pre.log { background: var(--ink); color: #DDE3EC; padding: 1rem; border-radius: 
   .dock { left: 1rem; right: 1rem; width: auto; }
 }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* ---------- classes page */
+.class-table { max-width: 40rem; }
+.class-table .pick { width: 2.5rem; }
+input.dot { width: 1.4rem; height: 1.4rem; padding: 0; border: 2px solid #fff; border-radius: 50%; box-shadow: 0 0 0 1px var(--line); cursor: pointer; background: none; }
+input.dot::-webkit-color-swatch-wrapper { padding: 0; }
+input.dot::-webkit-color-swatch { border: 0; border-radius: 50%; }
+input.dot::-moz-color-swatch { border: 0; border-radius: 50%; }
+dialog.panel { max-width: 28rem; width: calc(100% - 2rem); color: var(--ink); }
+dialog::backdrop { background: rgb(21 35 59 / 0.45); }
