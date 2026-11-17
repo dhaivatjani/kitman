@@ -381,11 +381,21 @@ def export_path(run):
     return Path(run["run_dir"]) / f"kitman_run{run['id']}.zip"
 
 
+def full_args(params):
+    """Every setting a run trains with, Ultralytics' defaults spelled out, so a command run elsewhere doesn't
+    depend on that machine's Ultralytics version. Blank ones (device, freeze) stay out: that machine picks."""
+    adv = {k: s[3] for k, s in SPEC.items()} | params.get("advanced", {})
+    args = {k: params[k] for k in DEFAULTS} | {k: to_ultralytics(k, v) for k, v in adv.items()} | params.get("extra", {})
+    return {k: v for k, v in args.items() if v is not None}
+
+
 def train_command(run):
-    """The yolo command that trains an exported run as Kitman would, run next to its data.yaml."""
-    args = {k: v for k, v in train_args(json.loads(run["params"])).items() if v is not None}
-    return (f"yolo train data=data.yaml model={Path(run['base_model']).name} project=runs name=train "
-            + " ".join(f"{k}={v if isinstance(v, str) else json.dumps(v, separators=(',', ':'))}" for k, v in args.items()))
+    """The command that trains an exported run as Kitman would, run next to its data.yaml. It saves the
+    console output as runs/train/train.log, so the folder brought back carries its own log."""
+    args = " ".join(f"{k}={v if isinstance(v, str) else json.dumps(v, separators=(',', ':'))}"
+                    for k, v in full_args(json.loads(run["params"])).items())
+    return (f"mkdir -p runs/train && yolo train data=data.yaml model={Path(run['base_model']).name} "
+            f"project=runs name=train exist_ok=True {args} 2>&1 | tee runs/train/train.log")
 
 
 def export_zip(job, run_id):
@@ -443,8 +453,8 @@ SAFE_NAME = re.compile(r"[\w\- ][\w.\- ]*")
 def pick_train_files(names):
     """'/'-separated paths (zip members, or files under a chosen folder) -> {path: name inside run/train}.
     The training folder is the one holding weights/best.pt, and there must be exactly one. Taken from it:
-    best/last weights and its own top-level files (results.csv, args.yaml, plots); nothing that could
-    land outside run/train."""
+    best/last weights, its own top-level files (results.csv, args.yaml, plots) and its one .log, whatever
+    its name, as train.log; nothing that could land outside run/train."""
     bests = [n for n in names if n == "weights/best.pt" or n.endswith("/weights/best.pt")]
     if not bests:
         raise ValueError("No weights/best.pt in it. Choose Ultralytics' training folder (runs/detect/train), "
@@ -453,22 +463,120 @@ def pick_train_files(names):
         raise ValueError(f"It holds {len(bests)} trainings ({', '.join(b[:-16] or '.' for b in bests)}). "
                          "Choose or zip just one.")
     root = bests[0][:-len("weights/best.pt")]
-    out = {}
+    out, logs = {}, []
     for n in names:
         rel = n[len(root):] if n.startswith(root) else None
         if rel in ("weights/best.pt", "weights/last.pt") or (
                 rel and SAFE_NAME.fullmatch(rel) and rel.lower().endswith((".csv", ".yaml", ".png", ".jpg"))):
             out[n] = rel
+        elif rel and SAFE_NAME.fullmatch(rel) and rel.lower().endswith(".log"):
+            logs.append(n)
+    if len(logs) > 1:
+        raise ValueError(f"It holds {len(logs)} log files ({', '.join(n[len(root):] for n in logs)}). "
+                         "Keep just the training log.")
+    if logs:
+        out[logs[0]] = "train.log"
     return out
+
+
+ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+# optional leading timestamp: logs saved through Python's logging stamp every line ("2026-10-30 10:30:11,489 ")
+TABLE_ROW = re.compile(r"^(?:\d{4}-\d\d-\d\d[ T]\d\d:\d\d:\d\d[,.]\d+)?\s*(.+?)\s+(\d+)\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*$")
+
+
+def log_metrics(text, names, n_images):
+    """Ultralytics' final check of best.pt in a training log (the table after its last 'Validating …best.pt'),
+    shaped like metrics_of: the same numbers a run trained here gets. -> (metrics, None) or (None, why not)."""
+    text = ANSI.sub("", text).replace("\r", "\n")
+    starts = [m.start() for m in re.finditer(r"Validating [^\n]*best\.pt", text)]
+    if not starts:
+        return None, "it has no final check of best.pt (training may have been cut short)"
+    table = []
+    for line in text[starts[-1]:].splitlines():
+        row = TABLE_ROW.match(line)
+        if row:
+            table.append(row)
+        elif table and line.strip():
+            break
+    rows = {r[1]: r for r in table}
+    if "all" not in rows:
+        return None, "it has no results table after its final check of best.pt"
+    if set(rows) - {"all"} - set(names):
+        return None, f"its classes ({', '.join(sorted(set(rows) - {'all'}))}) aren't this run's ({', '.join(names)})"
+    if int(rows["all"][2]) != n_images:
+        return None, f"its table covers {rows['all'][2]} images but this run has {n_images} val frames, so it isn't from this run's data"
+    score = lambda r: {"precision": float(r[4]), "recall": float(r[5]), "map50": float(r[6]), "map50_95": float(r[7])}
+    return {"overall": score(rows["all"]), "per_class": {n: score(r) for n, r in rows.items() if n != "all"}}, None
+
+
+CSV_KEYS = {"precision": "metrics/precision(B)", "recall": "metrics/recall(B)",
+            "map50": "metrics/mAP50(B)", "map50_95": "metrics/mAP50-95(B)"}
+
+
+def csv_mismatch(text, final, rows):
+    """Why a log isn't this training's, judged against its results.csv rows (epochs()), or None when it is: every
+    epoch's 'all' row in the log equals that epoch's csv row, and the final check equals the best epoch (best.pt's).
+    The log prints 3 significant figures and the csv 5, so equal means within half a unit of the log's last digit."""
+    text = ANSI.sub("", text).replace("\r", "\n")
+    end = [m.start() for m in re.finditer(r"Validating [^\n]*best\.pt", text)][-1]
+    logged = [r for r in map(TABLE_ROW.match, text[:end].splitlines()) if r and r[1] == "all"]
+    if not logged:
+        return "it has no epoch tables to match against this run's results.csv"
+    # from the end: a resumed training's log may hold only its later epochs
+    for r, row in zip(reversed(logged), reversed(rows)):
+        if any(abs(float(r[j]) - row.get(CSV_KEYS[k], -1)) > 0.0006 for j, k in zip((4, 5, 6, 7), CSV_KEYS)):
+            return f"its epoch {int(row.get('epoch', 0))} scores don't match this run's results.csv"
+    best = max(rows, key=lambda r: r.get(CSV_KEYS["map50_95"], 0))
+    # best.pt is saved in half precision after training, so its final check can sit a hair off its epoch's row
+    if any(abs(final["overall"][k] - best.get(CSV_KEYS[k], -1)) > 0.002 for k in ("map50", "map50_95")):
+        return f"its final check of best.pt doesn't match the best epoch ({int(best.get('epoch', 0))}) in results.csv"
+    return None
+
+
+def use_log(run, params, kitman):
+    """A run trained elsewhere scores from its training log's final table when the log is bound to it (the source
+    runs trained here use), else from Kitman's own score; params['imported'] records which, and why. A log is bound
+    when it matches the run's results.csv; with no results.csv (a lone best.pt) it must agree with Kitman's score."""
+    log, c = Path(run["run_dir"]) / "train.log", json.loads(run["counts"])
+    params["imported"]["kitman"] = kitman
+    if not log.is_file():
+        params["imported"]["log"] = None
+        return kitman
+    text = log.read_text(encoding="utf-8", errors="replace")
+    m, why = log_metrics(text, c["classes"], c["train"] if c["val_from_train"] else c["val"])
+    rows = epochs(run)
+    if m and rows:
+        why = csv_mismatch(text, m, rows)
+    elif m and abs(m["overall"]["map50"] - kitman["overall"]["map50"]) > 0.02:   # same frames, another model's log
+        why = (f"its mAP50 ({m['overall']['map50']:.3f}) is far from Kitman's own score of this model "
+               f"({kitman['overall']['map50']:.3f}), so it is likely another model's log")
+    m = None if why else m
+    params["imported"]["log"] = {"used": m is not None, "why": why}
+    return m or kitman
+
+
+def attach_log(run_id, data):
+    """Add or replace the training log of a run already trained elsewhere, and rescore it from the log."""
+    run = db.q1("SELECT * FROM training_run WHERE id=?", (run_id,))
+    params = json.loads(run["params"]) if run else {}
+    if not run or run["status"] != "done" or not params.get("imported"):
+        raise ValueError(f"Only a finished run trained elsewhere takes a log here; run {run_id} isn't one.")
+    if (params["imported"].get("log") or {}).get("used"):
+        raise ValueError(f"Run {run_id}'s training log is already bound to it, so it can't be replaced.")
+    (Path(run["run_dir"]) / "train.log").write_bytes(data)
+    m = use_log(run, params, params["imported"].get("kitman") or json.loads(run["metrics"]))
+    db.x("UPDATE training_run SET metrics=?, params=? WHERE id=?", (db.jdump(m), db.jdump(params), run_id))
+    return params["imported"]["log"], m
 
 
 IMPORTED_FROM = {"pt": "best.pt only", "zip": "a training folder zip", "folder": "a training folder"}
 
 
-def import_model(job, run_id, source, kind):
+def import_model(job, run_id, source, kind, log=None):
     """Bring back a model trained elsewhere for an exported run, then score it here on the run's own
     dataset so its numbers compare with runs trained here. kind: pt or zip (an uploaded file, removed
-    afterwards) or folder (a folder on this computer, left as it is)."""
+    afterwards) or folder (a folder on this computer, left as it is). log: an uploaded training log
+    for a lone best.pt (removed afterwards); a zip or folder brings its own."""
     from ultralytics import YOLO
     run = db.q1("SELECT * FROM training_run WHERE id=?", (run_id,))
     if not run or run["status"] != "exported":   # e.g. imported twice before the first finished
@@ -480,6 +588,8 @@ def import_model(job, run_id, source, kind):
     try:
         if kind == "pt":
             shutil.copy2(source, stage / "weights" / "best.pt")
+            if log:
+                shutil.copy2(log, stage / "train.log")
         elif kind == "zip":
             with zipfile.ZipFile(source) as z:   # read members as data, never extract paths
                 for src, rel in pick_train_files(z.namelist()).items():
@@ -497,12 +607,16 @@ def import_model(job, run_id, source, kind):
                              f"({', '.join(want)}) in that order, so it wasn't trained on this export.")
         shutil.rmtree(rd / "train", ignore_errors=True)   # left by an earlier import that failed while scoring
         stage.rename(rd / "train")
+        if (rd / "train" / "train.log").exists():   # where a run trained here keeps its log
+            (rd / "train" / "train.log").replace(rd / "train.log")
     except BaseException:
         shutil.rmtree(stage, ignore_errors=True)
         raise
     finally:
         if kind != "folder":
             Path(source).unlink(missing_ok=True)
+        if log:
+            Path(log).unlink(missing_ok=True)
 
     params = json.loads(run["params"])
     # The run now shows, scores at and copies what it was really trained with (its args.yaml); the plan is kept.
@@ -525,8 +639,10 @@ def import_model(job, run_id, source, kind):
         "epoch": int(best.get("epoch", 0)), "precision": best.get("metrics/precision(B)"),
         "recall": best.get("metrics/recall(B)"), "map50": best.get("metrics/mAP50(B)"),
         "map50_95": best.get("metrics/mAP50-95(B)")}}
+    m = use_log(run, params, m)
     db.x("UPDATE training_run SET status='done', metrics=?, params=?, base_model=?, finished=? WHERE id=?",
          (db.jdump(m), db.jdump(params), base, db.now(), run_id))
     db.x("INSERT INTO model (name, path, kind, training_run_id, created) VALUES (?,?,?,?,?)",
          (f"Run {run_id}: {run['name']}", str(rd / "train" / "weights" / "best.pt"), "kitman", run_id, db.now()))
-    return f"Run {run_id} imported: val mAP50 {m['overall']['map50']:.3f}, scored here"
+    source_of = "from its training log" if (params["imported"]["log"] or {}).get("used") else "scored here"
+    return f"Run {run_id} imported: val mAP50 {m['overall']['map50']:.3f}, {source_of}"

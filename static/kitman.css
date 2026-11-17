@@ -202,6 +202,7 @@ label.drop:hover, label.drop.over { border-color: var(--ink); color: var(--ink);
 label.drop.over { background: #F5F6F2; }
 label.drop.chosen { border-style: solid; border-color: var(--ok); color: var(--ink); }
 label.drop:focus-within { outline: 3px solid var(--red); outline-offset: 2px; }
+.log-form { max-width: 34rem; margin-top: 1rem; }
 label.drop input { position: absolute; inset: 0; opacity: 0; width: 1px; height: 1px; }
 @media (max-width: 900px) { .import-opts > form + form { border-left: 0; padding-left: 0; border-top: 1px solid var(--line-2); padding-top: 1rem; } }
 
@@ -280,5 +281,12 @@ input.dot { width: 1.4rem; height: 1.4rem; padding: 0; border: 2px solid #fff; b
 input.dot::-webkit-color-swatch-wrapper { padding: 0; }
 input.dot::-webkit-color-swatch { border: 0; border-radius: 50%; }
 input.dot::-moz-color-swatch { border: 0; border-radius: 50%; }
+.class-table .edit { width: 2.5rem; padding-left: 0; padding-right: 0; text-align: center; }
+button.pen { padding: 0.3rem; border-color: transparent; background: none; color: var(--ink-2); line-height: 0; vertical-align: middle; }
+button.pen:hover { background: var(--line-2); color: var(--ink); }
+tr:not(:hover) button.pen:not(:focus-visible, .tick) { opacity: 0.45; }
+button.pen.tick { color: var(--ok); }
+button.pen.tick:hover { background: var(--ok); color: #fff; }
+form.rename input { width: 14rem; padding: 0.25rem 0.45rem; }
 dialog.panel { max-width: 28rem; width: calc(100% - 2rem); color: var(--ink); }
 dialog::backdrop { background: rgb(21 35 59 / 0.45); }

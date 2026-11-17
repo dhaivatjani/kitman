@@ -682,6 +682,7 @@ def training_run(rid):
     return render_template("run.html", run=run, sets=sets, model=model, used_by=used_by,
                            passed=passed, used=used, copy_to=p.get("copy_to", ""), resumable=training.resumable(run),
                            imported=p.get("imported"), diffs=diffs,
+                           has_log=bool(run["run_dir"]) and (Path(run["run_dir"]) / "train.log").is_file(),
                            command=training.train_command(run) if run["status"] == "exported" else "")
 
 
@@ -715,9 +716,35 @@ def training_import(rid):
     else:
         flash("Choose a best.pt, a zip of the training folder, or the folder itself.", "error")
         return redirect(url_for("training_run", rid=rid))
-    jobs.submit("import", f"Import and score the model for run {rid}", training.import_model, rid, str(source), kind)
+    lf, log = request.files.get("log"), None   # optional, beside a lone best.pt
+    if kind == "pt" and lf and lf.filename:
+        if not lf.filename.lower().endswith(".log"):
+            flash("The training log must be a .log file.", "error")
+            return redirect(url_for("training_run", rid=rid))
+        log = str(Path(run["run_dir"]) / "upload.log")
+        lf.save(log)
+    jobs.submit("import", f"Import and score the model for run {rid}", training.import_model, rid, str(source), kind, log)
     flash("Importing. Kitman checks the model, then scores it on this run's val frames; "
           "reload this page when the job finishes.", "ok")
+    return redirect(url_for("training_run", rid=rid))
+
+
+@app.post("/training/<int:rid>/log")
+def training_log(rid):
+    """Add (or replace) the training log of a run trained elsewhere; its final table becomes the run's scores."""
+    f = request.files.get("log")
+    if not f or not f.filename.lower().endswith(".log"):
+        flash("Choose the training .log file.", "error")
+        return redirect(url_for("training_run", rid=rid))
+    try:
+        result, m = training.attach_log(rid, f.read())
+    except ValueError as e:
+        flash(str(e), "error")
+        return redirect(url_for("training_run", rid=rid))
+    if result["used"]:
+        flash(f"Log added. The scores now come from its final table: val mAP50 {m['overall']['map50']:.3f}.", "ok")
+    else:
+        flash(f"Log added and shown below, but its scores weren't used: {result['why']}.", "error")
     return redirect(url_for("training_run", rid=rid))
 
 
@@ -786,6 +813,8 @@ def classes_change():
     try:
         if act == "add":
             classes.add(request.form.get("new", ""))
+        elif act == "rename":
+            classes.rename(request.form.get("class", ""), request.form.get("new", ""))
         elif act == "merge":
             classes.merge(picked, request.form.get("target", ""))
         elif act == "delete":

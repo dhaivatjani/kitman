@@ -9,7 +9,7 @@ add videos → sample frames → batch → pre-label → Roboflow → correction
 ```
 
 Detector classes start as `ball`, `goalkeeper`, `player`, `referee` and are managed on the **Classes** page
-(add, merge, delete, colour). Ids are the A to Z order; every change renumbers the stored labels after a backup
+(add, rename, merge, delete, colour). Ids are the A to Z order; every change renumbers the stored labels after a backup
 to `data/backups/`. Merged names are remembered (a Roboflow export still using them imports as the class they
 became) and deleted names are dropped on import.
 
@@ -17,16 +17,52 @@ became) and deleted names are dropped on import.
 
 ## Contents
 
-1. [Setup](#setup)
-2. [Run it](#run-it)
-3. [The pages](#the-pages)
-4. [A round, start to finish](#a-round-start-to-finish)
-5. [Feature reference](#feature-reference)
-6. [Where things are stored](#where-things-are-stored)
-7. [Where the numbers come from](#where-the-numbers-come-from)
-8. [Code map](#code-map)
-9. [Troubleshooting](#troubleshooting)
-10. [Not built yet](#not-built-yet)
+1. [What's new](#whats-new)
+2. [Setup](#setup)
+3. [Run it](#run-it)
+4. [The pages](#the-pages)
+5. [A round, start to finish](#a-round-start-to-finish)
+6. [Feature reference](#feature-reference)
+7. [Where things are stored](#where-things-are-stored)
+8. [Where the numbers come from](#where-the-numbers-come-from)
+9. [Code map](#code-map)
+10. [Troubleshooting](#troubleshooting)
+11. [Not built yet](#not-built-yet)
+
+---
+
+## What's new
+
+Changes since commit `9081d00` (Classes page, training zip export / model import).
+
+### Added
+
+- **Training log with a `best.pt` import.** The *Just best.pt* form takes an optional `.log` beside the weights.
+- **Training log from a zip or folder import.** The one `.log` in the training folder is kept as `train.log`;
+  more than one is rejected.
+- **Add or replace a log later.** A run trained elsewhere has an *Add training log* form on its page
+  (`POST /training/<rid>/log`). A log already used for scoring can't be replaced.
+- **Scores from the training log.** The log's final results table for `best.pt` becomes the run's scores, the
+  same source runs trained here use.
+- **Log check.** The log is only used if it belongs to the run: every epoch must match `results.csv` and its final
+  check must match the best epoch. With no `results.csv`, its mAP50 must be within 0.02 of Kitman's own score.
+  Otherwise Kitman's own score is used and the reason is shown.
+- **"Where the scores come from"** table on the run page: log, Kitman's own score and `results.csv`, side by side,
+  with the one used marked.
+- **"scored here"** hint in the runs table for imported runs with no usable log.
+- **Rename a class** (Classes page). The pencil turns the name into a text box: Enter or the tick saves, Esc
+  cancels. Boxes and colour stay; the old name becomes an alias, so Roboflow projects still using it import as
+  the new one.
+
+### Changed
+
+- **Exported run's train command** spells out every setting, Ultralytics' defaults included, so it doesn't
+  depend on the other machine's Ultralytics version. It saves the console output to `runs/train/train.log` and
+  adds `exist_ok=True`.
+- **Training log panel** now also shows on imported runs that have a log.
+- **File drop boxes** can be optional; an empty optional one no longer disables the submit button.
+- **Splits** (`splits.csv`): M14 and M15 moved from train to val.
+- **Tests:** `test_kitman.py` checks log picking, log score reading and log-to-run binding.
 
 ---
 
@@ -279,7 +315,9 @@ Everything Kitman owns is in `kitman/data/` (git ignores it):
 ## Where the numbers come from
 
 A run's metrics are Ultralytics' own final validation of `best.pt`, i.e. the last results table in
-`data/runs/run<N>/train.log`. Every frame a run used is listed, with its split, in `data/runs/run<N>/frames.csv`.
+`data/runs/run<N>/train.log`. A run trained elsewhere uses its training log the same way when the log matches
+the run (see [What's new](#whats-new)); otherwise its metrics are Kitman's own score of `best.pt` on the run's val
+frames. Every frame a run used is listed, with its split, in `data/runs/run<N>/frames.csv`.
 Test metrics come from a separate evaluation on the test matches (step 9).
 
 ---

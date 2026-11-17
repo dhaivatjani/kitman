@@ -64,7 +64,9 @@
       </form>
       <form method="post" enctype="multipart/form-data" action="{{ url_for('training_import', rid=run.id) }}">
         <h3>Just best.pt</h3>
-        <p>Weights only. Scores work; no epoch chart or remote settings.</p>
+        <p>Weights only, with its training log if you have it. No epoch chart or remote settings.</p>
+        <label class="drop" data-optional><input type="file" name="log" accept=".log" aria-label="Training log (optional)">
+          <span>Training log (optional): choose the .log, or drop it here</span></label>
         <div class="pick"><label class="drop"><input type="file" name="weights" accept=".pt" required aria-label="best.pt">
           <span>Choose best.pt, or drop it here</span></label>
           <button class="primary" disabled>Import and score</button></div>
@@ -131,22 +133,39 @@
   </tbody>
 </table>
 {% endfor %}
-{% if imported and imported.remote %}{% set r = imported.remote %}
-<h2>Scores: here vs. where it trained</h2>
-<p class="small muted">Kitman's numbers come from scoring best.pt here on this run's dataset; they are the ones in the runs table. The remote numbers are from its results.csv, epoch {{ r.epoch }}. A big gap means different data or settings.</p>
+{% if imported %}{% set r = imported.remote %}{% set k = imported.kitman or mt %}{% set from_log = imported.log and imported.log.used %}
+{% macro score_row(label, m, strong=false) -%}
+<tr><td>{% if strong %}<b>{{ label }}</b>{% else %}<span class="muted">{{ label }}</span>{% endif %}</td>
+  {% for key in ['precision', 'recall'] %}<td class="r num{{ '' if strong else ' muted' }}">{{ pct(m[key]) }}%</td>{% endfor %}
+  {% for key in ['map50', 'map50_95'] %}<td class="r num{{ '' if strong else ' muted' }}">{{ '%.3f'|format(m[key]) if m[key] is not none else '–' }}</td>{% endfor %}</tr>
+{%- endmacro %}
+<h2>Where the scores come from</h2>
+{% if from_log %}
+<p class="small muted">The training log is bound to this run: every epoch in it matches the run's results.csv, and its final check of best.pt matches the best epoch. Its final check is the same source runs trained here use, so these are the scores in the runs table. Kitman's own score of best.pt on this computer is there for comparison.</p>
+{% else %}
+<p class="small muted">{% if imported.log %}The training log is shown below, but its scores weren't used: {{ imported.log.why }}.{% else %}No training log came with this model.{% endif %} So the scores in the runs table are Kitman's own score of best.pt on this computer, a slightly different source from runs trained here.</p>
+{% endif %}
 <table>
   <thead><tr><th></th><th class="r">Precision</th><th class="r">Recall</th><th class="r">mAP50</th><th class="r">mAP50-95</th></tr></thead>
   <tbody>
-    <tr><td><b>Kitman (scored here)</b></td><td class="r num">{{ pct(mt.overall.precision) }}%</td><td class="r num">{{ pct(mt.overall.recall) }}%</td><td class="r num">{{ '%.3f'|format(mt.overall.map50) }}</td><td class="r num">{{ '%.3f'|format(mt.overall.map50_95) }}</td></tr>
-    <tr><td class="muted">Reported where it trained</td><td class="r num muted">{{ pct(r.precision) }}%</td><td class="r num muted">{{ pct(r.recall) }}%</td><td class="r num muted">{{ '%.3f'|format(r.map50) if r.map50 is not none else '–' }}</td><td class="r num muted">{{ '%.3f'|format(r.map50_95) if r.map50_95 is not none else '–' }}</td></tr>
+    {% if from_log %}{{ score_row('From its training log (used)', mt.overall, true) }}{{ score_row('Kitman, scored here', k.overall) }}
+    {% else %}{{ score_row('Kitman, scored here (used)', mt.overall, true) }}{% endif %}
+    {% if r %}{{ score_row('Its results.csv, epoch ' ~ r.epoch, r) }}{% endif %}
   </tbody>
 </table>
+{% if not from_log %}
+<form method="post" enctype="multipart/form-data" action="{{ url_for('training_log', rid=run.id) }}" class="modes import-opts log-form">
+  <div class="pick"><label class="drop"><input type="file" name="log" accept=".log" required aria-label="Training log">
+    <span>{{ 'Replace the training log: choose the .log, or drop it here' if has_log else 'Add its training log: choose the .log, or drop it here' }}</span></label>
+    <button class="primary" disabled>{{ 'Replace training log' if has_log else 'Add training log' }}</button></div>
+</form>
+{% endif %}
 {% endif %}
 {% if mt and not tm and c.test %}
 <form method="post" action="{{ url_for('training_test', rid=run.id) }}" style="margin-top:1rem"><button>Evaluate on test matches</button> <span class="hint">Do this once, for the final number.</span></form>
 {% endif %}
 
-<div {{ 'hidden' if run.status == 'exported' or imported }}>
+<div {{ 'hidden' if run.status == 'exported' or (imported and not has_log) }}>
 <h2>Training log</h2>
 <pre class="log" id="log">{{ '' }}</pre>
 </div>

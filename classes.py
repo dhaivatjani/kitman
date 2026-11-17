@@ -154,6 +154,11 @@ def delete(gone):
         return _delete(gone)
 
 
+def rename(old, new):
+    with _changing:
+        return _rename(old, new)
+
+
 def _add(name, color):
     name = name.strip().lower()
     if not NAME.match(name):
@@ -191,6 +196,25 @@ def _delete(gone):
                   [(f"DELETE FROM class WHERE name IN ({q})", tuple(gone)),
                    (f"UPDATE class_alias SET target=NULL WHERE target IN ({q})", tuple(gone))]
                   + [("INSERT OR REPLACE INTO class_alias VALUES (?,NULL)", (g,)) for g in gone])
+
+
+def _rename(old, new):
+    """The class keeps its boxes and colour; its id moves if the new name sorts elsewhere.
+    The old name lives on as an alias, so Roboflow projects still using it import as the new one."""
+    new = new.strip().lower()
+    live = names()
+    if old not in live:
+        raise ValueError(f"There's no class {old}.")
+    if not NAME.match(new):
+        raise ValueError("A class name is lowercase letters, digits, - or _, starting with a letter or digit.")
+    if new in live:
+        raise ValueError(f"{new} already exists. To combine the two, merge them.")
+    start(f"Rename {old} to {new}", {old: new},
+          [("INSERT INTO class (name, color) SELECT ?, color FROM class WHERE name=?", (new, old)),
+           ("DELETE FROM class WHERE name=?", (old,)),
+           ("DELETE FROM class_alias WHERE name=?", (new,)),   # the new name may have been merged or deleted before
+           ("UPDATE class_alias SET target=? WHERE target=?", (new, old)),
+           ("INSERT OR REPLACE INTO class_alias VALUES (?,?)", (old, new))])
 
 
 def recolor(name, color):

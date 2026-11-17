@@ -228,19 +228,19 @@ function exportedRun() {
     });
   }
   for (const drop of document.querySelectorAll(".drop")) {
-    const input = $("input", drop), text = $("span", drop), go = $("button", drop.parentElement);
+    const input = $("input", drop), text = $("span", drop), go = "optional" in drop.dataset ? null : $("button", drop.parentElement);
     const empty = text.textContent;
     const show = () => {
       const f = input.files[0], ok = f && f.name.toLowerCase().endsWith(input.accept);
       drop.classList.toggle("chosen", !!ok);
       text.textContent = !f ? empty : ok ? `${f.name}, ${(f.size / 2 ** 20).toFixed(f.size < 2 ** 20 ? 2 : 0)} MB` : `${f.name} isn't a ${input.accept} file`;
-      go.disabled = !ok;
+      if (go) go.disabled = !ok;   // an optional file (a log beside best.pt) gates nothing
     };
     input.addEventListener("change", show);
     drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
     drop.addEventListener("dragleave", () => drop.classList.remove("over"));
     drop.addEventListener("drop", (e) => { e.preventDefault(); drop.classList.remove("over"); input.files = e.dataTransfer.files; show(); });
-    go.form.addEventListener("submit", () => { go.disabled = true; go.textContent = "Uploading…"; });
+    if (go) go.form.addEventListener("submit", () => { go.disabled = true; go.textContent = "Uploading…"; });
   }
   const btn = $("#pick-import"), note = $("#pick-import-note"), form = $("#import-folder");
   if (!btn) return;

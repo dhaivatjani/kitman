@@ -16,11 +16,15 @@
 
 <div id="classes">
   <table class="class-table">
-    <thead><tr><th class="pick"><input type="checkbox" id="all" aria-label="Select all classes" {{ 'disabled' if busy }}></th><th>Colour</th><th>Class name</th><th class="r">Id</th></tr></thead>
+    <thead><tr><th class="pick"><input type="checkbox" id="all" aria-label="Select all classes" {{ 'disabled' if busy }}></th><th>Colour</th><th>Class name</th><th class="edit"></th><th class="r">Id</th></tr></thead>
     <tbody>{% for c, col in shown %}
       <tr><td class="pick"><input type="checkbox" class="pick-one" value="{{ c }}" aria-label="Select {{ c }}" {{ 'disabled' if busy }}></td>
         <td><input type="color" class="dot" value="{{ col }}" data-class="{{ c }}" aria-label="Colour of {{ c }}"></td>
-        <td>{{ c }}</td><td class="r num muted">{{ loop.index0 }}</td></tr>
+        <td class="cname">{{ c }}</td>
+        <td class="edit"><button type="button" class="pen" data-rename="{{ c }}" aria-label="Rename {{ c }}" title="Rename" {{ 'disabled' if busy }}>
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M11.3 1.7a1.5 1.5 0 0 1 2.1 0l.9.9a1.5 1.5 0 0 1 0 2.1L5.6 13.4 2 14l.6-3.6z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
+          </button></td>
+        <td class="r num muted">{{ loop.index0 }}</td></tr>
     {% endfor %}</tbody>
   </table>
   <div class="row" style="margin-top:.75rem">
@@ -88,7 +92,49 @@
       $("#delete-go").disabled = true;
       $("#delete-dlg").showModal();
     } else if (t.matches("[data-close]")) t.closest("dialog").close();
+    else if (t.closest(".pen")) {
+      const pen = t.closest(".pen");
+      pen.save ? pen.save() : rename(pen);
+    }
   });
+  // pen: the name becomes a text box and the pen a tick; Enter or the tick saves, Esc or clicking away cancels
+  const TICK = `<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2.5 8.5l3.5 3.5 7.5-8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  function rename(pen) {
+    const cell = pen.closest("tr").querySelector(".cname"), old = pen.dataset.rename, keep = cell.innerHTML;
+    const penIcon = pen.innerHTML, penLabel = pen.getAttribute("aria-label");
+    const hold = (e) => e.preventDefault();   // pressing the tick mustn't blur the box, which would cancel
+    const form = Object.assign(document.createElement("form"), { method: "post", className: "rename" });
+    form.innerHTML = `<input type="hidden" name="action" value="rename"><input type="hidden" name="class">
+      <input name="new" required pattern="[a-z0-9][a-z0-9_\\-]{0,39}" autocomplete="off" aria-label="New name for ${esc(old)}"
+        title="Lowercase letters, digits, - or _. Enter saves, Esc cancels.">`;
+    form.class.value = old;
+    const input = form.new;
+    input.value = old;
+    cell.replaceChildren(form);
+    input.select();
+    pen.innerHTML = TICK;
+    pen.classList.add("tick");
+    pen.setAttribute("aria-label", `Save new name for ${old}`);
+    pen.title = "Save";
+    pen.addEventListener("mousedown", hold);
+    pen.save = () => form.requestSubmit();   // runs the name check like Enter does
+    const cancel = () => {
+      if (!cell.contains(form)) return;
+      cell.innerHTML = keep;
+      pen.innerHTML = penIcon;
+      pen.classList.remove("tick");
+      pen.setAttribute("aria-label", penLabel);
+      pen.title = "Rename";
+      pen.removeEventListener("mousedown", hold);
+      delete pen.save;
+    };
+    input.addEventListener("keydown", (e) => { if (e.key === "Escape") cancel(); });
+    input.addEventListener("blur", () => setTimeout(cancel, 150));
+    form.addEventListener("submit", (e) => {
+      if (input.value.trim().toLowerCase() === old) { e.preventDefault(); cancel(); }
+      else pen.disabled = true;
+    });
+  }
   $("#delete-confirm").addEventListener("input", (e) =>
     ($("#delete-go").disabled = e.target.value.trim() !== $("#delete-phrase").textContent));
   // a second click must not send the change twice

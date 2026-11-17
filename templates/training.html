@@ -82,7 +82,8 @@
   {% for r in runs %}{% set mt = r.metrics|fromjson %}{% set c = r.counts|fromjson %}
     <tr><td><a href="{{ url_for('training_run', rid=r.id) }}">{{ r.id }}: {{ r.name }}</a></td><td class="small">{{ r.base_model.split('\\')[-1].split('/')[-1] }}</td>
       <td class="r num">{{ c.train }}</td><td class="r num">{{ 'train' if c.val_from_train else c.val }}</td><td>{{ status(r.status) }}</td>
-      <td class="r num">{{ '%.3f'|format(mt.overall.map50) if mt else '–' }}</td><td class="r num">{{ '%.3f'|format(mt.overall.map50_95) if mt else '–' }}</td>
+      {% set imp = (r.params|fromjson).imported %}
+      <td class="r num">{{ '%.3f'|format(mt.overall.map50) if mt else '–' }}{% if imp and not (imp.log and imp.log.used) %}<br><span class="hint" title="Trained elsewhere with no usable training log: scored by Kitman on this computer">scored here</span>{% endif %}</td><td class="r num">{{ '%.3f'|format(mt.overall.map50_95) if mt else '–' }}</td>
       <td class="r num">{{ pct(mt.per_class.ball.recall) ~ '%' if mt and mt.per_class.ball else '–' }}</td>
       <td class="small muted">{{ r.created|replace('T', ' ') }}</td>
       <td>{% if r.status in ('queued', 'running') and r.id not in resumable %}

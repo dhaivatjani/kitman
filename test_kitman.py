@@ -228,8 +228,12 @@ with tempfile.TemporaryDirectory() as tmp:
             y = z.read("data.yaml").decode()
             assert "path:" not in y and "val: train/images" in y and "test:" not in y and "0: ball\n  1: player" in y   # the run's own classes
             cmd = json.loads(z.read("kitman_run.json"))["command"]
-        assert cmd.startswith("yolo train data=data.yaml model=yolo26m.pt project=runs name=train imgsz=1280")
+        assert cmd.startswith("mkdir -p runs/train && yolo train data=data.yaml model=yolo26m.pt project=runs name=train "
+                              "exist_ok=True imgsz=1280") and cmd.endswith("2>&1 | tee runs/train/train.log")
         assert "fraction=0.5" in cmd and "device" not in cmd   # blank device: let the remote machine pick
+        for key in training.SPEC:   # every advanced setting spelled out, defaults included
+            assert key in ("device", "freeze") or f" {key}=" in cmd, key
+        assert " scale=0.5 " in cmd and " cache=false " in cmd and " amp=true " in cmd
         assert training.resumable(db.q1("SELECT * FROM training_run WHERE id=12")) is False
 
         # Download zip: the same file within 12 hours, a fresh one after, and the sweep deletes old ones
@@ -259,7 +263,8 @@ assert pick(["weights/best.pt", "weights/last.pt", "results.csv", "args.yaml", "
 got = pick(["runs/detect/train/weights/best.pt", "runs/detect/train/results.csv", "runs/detect/train/val/x.png",
             "runs/detect/train/..\\..\\evil.csv", "other/results.csv", "runs/detect/train/weights/epoch5.pt"])
 assert got == {"runs/detect/train/weights/best.pt": "weights/best.pt", "runs/detect/train/results.csv": "results.csv"}, got
-for bad in (["results.csv"], ["a/weights/best.pt", "b/weights/best.pt"]):
+assert pick(["t/weights/best.pt", "t/colab output.log", "other.log"])["t/colab output.log"] == "train.log"
+for bad in (["results.csv"], ["a/weights/best.pt", "b/weights/best.pt"], ["weights/best.pt", "a.log", "b.log"]):
     try:
         pick(bad)
         raise AssertionError(f"accepted {bad}")
@@ -406,6 +411,20 @@ with tempfile.TemporaryDirectory() as tmp:
         [t.start() for t in ts]
         [t.join() for t in ts]
         assert len(errs) == 1 and ids() == [1, 2, 2] and classes.names()[0] == "aaa"
+        # rename: same boxes and colour, new spot in A-Z, old name kept as an alias
+        db.x("UPDATE class SET color='#123456' WHERE name='ball'")
+        classes.rename("ball", "zball")                         # aaa 0, coach 1, goalkeeper 2, zball 3
+        assert classes.names() == ["aaa", "coach", "goalkeeper", "zball"] and ids() == [3, 1, 1]
+        assert dict(classes.colors())["zball"] == "#123456" and classes.aliases()["ball"] == "zball"
+        assert cnt() == {"aaa": 0, "coach": 2, "goalkeeper": 0, "zball": 1}
+        classes.rename("zball", "ball")                         # and back: ball is live again, not an alias
+        assert ids() == [1, 2, 2] and "ball" not in classes.aliases() and classes.aliases()["zball"] == "ball"
+        for bad in (lambda: classes.rename("ball", "coach"), lambda: classes.rename("nope", "x"), lambda: classes.rename("ball", "B B")):
+            try:
+                bad()
+                raise AssertionError("bad rename accepted")
+            except ValueError:
+                pass
         # queued: the Classes page shows the result at once; the real list and files switch when the job runs
         classes.jobs.submit = lambda kind, title, fn, *a: queued.append((fn, a))
         classes.delete(["aaa"])
@@ -433,5 +452,50 @@ with tempfile.TemporaryDirectory() as tmp:
         assert classes.pending is None
     finally:
         db.DB_PATH, classes.DATA, classes.DB_PATH, labels.DATA, classes.jobs.submit = real
+
+# Training logs: the final check of best.pt is read like Ultralytics' own result for a run trained here
+log = ("      100/100  4.1G  0.9  0.5  0.8  12  1920: 100% 27/27\n"
+       "                   all         54        869       0.95      0.94      0.96      0.80\n"   # an epoch's check
+       "\x1b[34mValidating /content/runs/train/weights/best.pt...\x1b[0m\r\n"
+       "                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95)\n"
+       "                   all         54        869      0.968      0.954      0.971      0.849\n"
+       "                  ball         44         44          1      0.872      0.906       0.64\n"
+       "                player         48        730      0.996      0.993      0.995      0.919\n\n"
+       "Speed: 0.3ms preprocess\n")
+names = ["ball", "goalkeeper", "player", "referee"]
+m, why = training.log_metrics(log, names, 54)
+assert why is None and m["overall"] == {"precision": 0.968, "recall": 0.954, "map50": 0.971, "map50_95": 0.849}
+assert set(m["per_class"]) == {"ball", "player"} and m["per_class"]["ball"]["map50_95"] == 0.64
+assert training.log_metrics(log, names, 261)[0] is None                      # another dataset's log
+assert training.log_metrics(log, ["car", "truck"], 54)[0] is None             # another model's classes
+assert "cut short" in training.log_metrics(log.split("Validating")[0], names, 54)[1]
+stamped = "".join(f"2026-10-30 10:30:11,489 {l}\n" if "  all  " in l or "  ball  " in l else l + "\n"
+                  for l in log.splitlines())   # Kaggle-style logging, a timestamp on every table line
+assert training.log_metrics(stamped, names, 54)[0]["overall"]["map50"] == 0.971
+with tempfile.TemporaryDirectory() as t:   # with no results.csv (a lone best.pt), the log must agree with Kitman's score
+    (Path(t) / "train.log").write_text(log)
+    run = {"run_dir": t, "counts": json.dumps({"train": 54, "val": 0, "val_from_train": True, "classes": names})}
+    p, k = {"imported": {}}, {"overall": {"map50": 0.97}}
+    assert training.use_log(run, p, k)["overall"]["map50"] == 0.971 and p["imported"]["log"]["used"]
+    p, k = {"imported": {}}, {"overall": {"map50": 0.90}}
+    assert training.use_log(run, p, k) is k and "another model" in p["imported"]["log"]["why"]
+
+    # with results.csv, the log is bound only when its epochs and final check match it (Kitman's score plays no part)
+    (Path(t) / "train").mkdir()
+    head = "epoch,metrics/precision(B),metrics/recall(B),metrics/mAP50(B),metrics/mAP50-95(B)\n"
+    csv_file = Path(t) / "train" / "results.csv"
+    csv_file.write_text(head + "1,0.6,0.5,0.5,0.3\n2,0.95012,0.93985,0.95978,0.80049\n3,0.90,0.90,0.91,0.70\n")
+    two_epochs = log.replace("      100/100", "                   all         54        869        0.6       0.5       0.5       0.3\n      100/100")
+    two_epochs = two_epochs.replace("0.96      0.80\n", "0.96      0.80\n                   all         54        869        0.9       0.9      0.91       0.7\n", 1)
+    (Path(t) / "train.log").write_text(two_epochs)
+    p, k = {"imported": {}}, {"overall": {"map50": 0.5}}   # far from the log: no longer matters
+    assert training.use_log(run, p, k) is k and "best epoch" in p["imported"]["log"]["why"]   # best is epoch 2, not 0.971
+    csv_file.write_text(head + "1,0.6,0.5,0.5,0.3\n2,0.96812,0.95395,0.97103,0.84921\n3,0.90,0.90,0.91,0.70\n")
+    assert "epoch 2 scores" in (training.use_log(run, p := {"imported": {}}, k) is k and p["imported"]["log"]["why"])
+    csv_file.write_text(head + "1,0.6,0.5,0.5,0.3\n2,0.95012,0.93985,0.95978,0.84921\n3,0.90,0.90,0.91,0.70\n")
+    two_epochs = two_epochs.replace("0.96      0.80\n", "0.96     0.849\n", 1)   # epoch 2 now best, final check on it
+    (Path(t) / "train.log").write_text(two_epochs.replace("0.971      0.849", "0.96      0.849"))
+    m = training.use_log(run, p := {"imported": {}}, k)
+    assert p["imported"]["log"]["used"] and m["overall"]["map50_95"] == 0.849, p
 
 print("All Kitman checks passed")
